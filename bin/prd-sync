@@ -1,0 +1,153 @@
+#!/bin/bash
+#
+# Sincronizar PRD mais recente da issue para arquivo local (Cenário 2)
+# Uso: ./bin/prd-sync <issue-number>
+#
+# O script busca:
+# 1. Comentários com metatag PRD-ID (usa o mais recente baseado em PRD-UPDATED)
+# 2. Se não encontrar, usa a descrição da issue
+
+set -e
+
+# Source common functions
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_script_dir/prd-common"
+
+_show_help() {
+    echo "Sincronizar PRD mais recente da issue para arquivo local"
+    echo "Uso: $0 <issue-number>"
+    echo ""
+    echo "Argumentos:"
+    echo "  issue-number  Número da issue (GitHub ou GitLab)"
+    echo ""
+    echo "O script busca o PRD mais recente:"
+    echo "  1. Procura comentários com metatag PRD-ID"
+    echo "  2. Usa o mais recente baseado em PRD-UPDATED"
+    echo "  3. Se não encontrar, usa a descrição da issue"
+    echo ""
+    echo "Nota: Detecta automaticamente GitHub ou GitLab"
+    echo "      Cria arquivo prd/hpos-README-prd-<issue>.md"
+    exit 0
+}
+
+# Parse arguments
+if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    _show_help
+fi
+
+_issue_number="$1"
+
+# Validate
+if [[ -z "$_issue_number" ]]; then
+    echo "❌ Número da issue é obrigatório"
+    exit 1
+fi
+
+_platform=$(_detect_platform)
+_platform_name="GitHub"
+[[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
+
+# Get issue details
+echo "📝 Buscando detalhes da issue #$_issue_number ($_platform_name)..."
+_issue_title=$(issue_get_title "$_issue_number")
+
+if [[ -z "$_issue_title" ]]; then
+    echo "❌ Issue #$_issue_number não encontrada"
+    exit 1
+fi
+
+# Search for PRD in comments (with PRD-ID metatag)
+echo "🔍 Buscando PRD em comentários..."
+_prd_content=""
+_prd_updated=""
+
+if [[ "$_platform" == "github" ]]; then
+    # GitHub: use API and jq
+    _comments=$(issue_get_comments "$_issue_number")
+
+    # Find comments with PRD-ID metatag
+    if command -v jq &>/dev/null && [[ -n "$_comments" ]]; then
+        _prd_comments=$(echo "$_comments" | jq -r '.[] | select(.body | contains("PRD-ID")) | {body: .body, updated: .updated_at, created: .created_at} | @json' 2>/dev/null || echo "")
+
+        if [[ -n "$_prd_comments" ]]; then
+            echo "📋 PRDs encontrados em comentários, buscando mais recente..."
+            _latest_comment=$(echo "$_prd_comments" | jq -rs 'sort_by(.updated) | reverse | .[0]')
+            _prd_content=$(echo "$_latest_comment" | jq -r '.body')
+            _prd_updated=$(echo "$_prd_content" | grep -oP 'PRD-UPDATED: \K.*' | head -1 || echo "")
+        fi
+    fi
+elif [[ "$_platform" == "gitlab" ]]; then
+    # GitLab: use API and jq
+    _comments=$(issue_get_comments "$_issue_number")
+
+    # Find notes with PRD-ID metatag
+    if command -v jq &>/dev/null && [[ -n "$_comments" ]]; then
+        _prd_notes=$(echo "$_comments" | jq -r '.[] | select(.body | contains("PRD-ID")) | {body: .body, updated: .updated_at, created: .created_at} | @json' 2>/dev/null || echo "")
+
+        if [[ -n "$_prd_notes" ]]; then
+            echo "📋 PRDs encontrados em comentários, buscando mais recente..."
+            _latest_note=$(echo "$_prd_notes" | jq -rs 'sort_by(.updated) | reverse | .[0]')
+            _prd_content=$(echo "$_latest_note" | jq -r '.body')
+            _prd_updated=$(echo "$_prd_content" | grep -oP 'PRD-UPDATED: \K.*' | head -1 || echo "")
+        fi
+    fi
+fi
+
+# If no PRD in comments, use issue description
+if [[ -z "$_prd_content" ]]; then
+    echo "📄 Nenhum PRD encontrado em comentários, usando descrição da issue..."
+    _prd_content=$(issue_get_body "$_issue_number")
+fi
+
+# Extract PRD-ID from content
+_prd_id=$(echo "$_prd_content" | grep -oP 'PRD-ID: \K\w+' | head -1 || echo "")
+
+# If still no PRD-ID, generate one based on issue title
+if [[ -z "$_prd_id" ]]; then
+    # Create slug from issue title
+    _prd_id=$(echo "$_issue_title" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -d '[:punct:]' | cut -c1-30)
+fi
+
+# Create local filename
+_prd_file="prd/hpos-README-prd-$_issue_number.md"
+
+# Check if PRD already exists locally
+if [[ -f "$_prd_file" ]]; then
+    echo "⚠️  PRD já existe localmente: $_prd_file"
+    read -p "Deseja sobrescrever? (s/N): " _confirm
+    if [[ "$_confirm" != "s" && "$_confirm" != "S" ]]; then
+        echo "❌ Operação cancelada"
+        exit 0
+    fi
+fi
+
+# Create prd directory if not exists
+mkdir -p prd
+
+# Save PRD to local file
+echo "💾 Salvando PRD localmente..."
+echo "$_prd_content" > "$_prd_file"
+
+# If PRD doesn't have metatags yet, add them
+if ! grep -q "PRD-ID:" "$_prd_file"; then
+    echo "🏷️  Adicionando metatags ao PRD..."
+    _timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    _version=$(grep -oP 'Versão.*v\K[0-9]+\.[0-9]+' "$_prd_file" || echo "1.0")
+
+    # Add metatags at the beginning
+    sed -i "1s/^/<!--\nPRD-ID: $_prd_id\nPRD-VERSION: $_version\nPRD-UPDATED: $_timestamp\n-->\n\n/" "$_prd_file"
+fi
+
+echo ""
+echo "✅ PRD sincronizado com sucesso!"
+echo "📄 Arquivo: $_prd_file"
+echo "🏷️  PRD-ID: $_prd_id"
+echo "🔗 Issue: #$_issue_number"
+echo "🔧 Plataforma: $_platform_name"
+echo ""
+echo "📋 Próximos passos:"
+echo "   1. Edite o PRD: vim $_prd_file"
+echo "   2. Ver mudanças: ./bin/prd-diff $_prd_file"
+echo "   3. Atualize a issue: ./bin/prd-update $_prd_file"
+echo ""
+echo "⚠️  Lembre-se: PRDs ficam apenas localmente, não são commitados no git"

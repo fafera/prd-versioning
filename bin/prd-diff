@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# Ver mudanças do PRD vs versão anterior (backup local)
+# ATENÇÃO: Este script NÃO usa git
+
+set -e
+
+_show_help() {
+    echo "Ver mudanças do PRD vs versão anterior (backup local)"
+    echo ""
+    echo "Uso: $0 <prd-file>"
+    echo ""
+    echo "Argumentos:"
+    echo "  prd-file  Caminho do arquivo PRD"
+    echo ""
+    echo "Nota: Compara arquivo atual com backup da versão anterior"
+    exit 0
+}
+
+# Parse arguments
+if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    _show_help
+fi
+
+_prd_file="$1"
+
+# Validate
+if [[ ! -f "$_prd_file" ]]; then
+    echo "❌ PRD não encontrado: $_prd_file"
+    exit 1
+fi
+
+# Check if backup exists
+_backup_file="${_prd_file}.backup"
+if [[ ! -f "$_backup_file" ]]; then
+    echo "ℹ️  Nenhum backup encontrado"
+    echo "Este é o PRD inicial"
+
+    # Try to get version from metatag
+    _current_version=$(grep -oP 'PRD-VERSION: \Kv?[0-9.]+' "$_prd_file" || echo "1.0")
+    echo "Versão atual: v$_current_version"
+    exit 0
+fi
+
+# Get current version from metatag
+_current_version=$(grep -oP 'PRD-VERSION: \Kv?[0-9.]+' "$_prd_file" || echo "1.0")
+
+# Get previous version from backup
+_previous_version=$(grep -oP 'PRD-VERSION: \Kv?[0-9.]+' "$_backup_file" || echo "desconhecida")
+
+echo "🔍 Diff para PRD: $_prd_file"
+echo "📊 Versão anterior: v$_previous_version → Versão atual: v$_current_version"
+echo ""
+
+# Show diff
+echo "📊 Mudanças desde versão anterior:"
+echo "```diff"
+diff -u "$_backup_file" "$_prd_file" | tail -n +3
+echo "```"
+echo ""
+
+echo "💡 Para publicar estas mudanças:"
+echo "   ./bin/prd-update $_prd_file"

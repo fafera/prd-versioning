@@ -1,0 +1,187 @@
+#!/bin/bash
+#
+# Atualizar PRD e publicar nova versão na issue
+#
+# Uso:
+#   ./bin/prd-update <prd-file>              # Para PRDs com nome customizado (Cenário 1)
+#   ./bin/prd-update <prd-file> [version]    # Para versão específica
+#
+# Exemplos:
+#   ./bin/prd-update prd/hpos-compatibilidade.md
+#   ./bin/prd-update prd/hpos-README-prd-390.md v2.0
+
+set -e
+
+# Source common functions
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_script_dir/prd-common"
+
+_show_help() {
+    echo "Atualizar PRD e publicar nova versão na issue"
+    echo ""
+    echo "Uso:"
+    echo "  $0 <prd-file> [version]"
+    echo ""
+    echo "Argumentos:"
+    echo "  prd-file  Caminho do arquivo PRD"
+    echo "  version   Nova versão (opcional, auto-incrementada se não fornecida)"
+    echo ""
+    echo "Exemplos:"
+    echo "  $0 prd/hpos-compatibilidade.md"
+    echo "  $0 prd/hpos-README-prd-390.md v2.0"
+    echo ""
+    echo "Nota: Detecta automaticamente GitHub ou GitLab"
+    echo "      Publica atualização como comentário na issue com metatags"
+    exit 0
+}
+
+# Function to increment version
+_increment_version() {
+    local version=$1
+    local major=$(echo "$version" | grep -oP '^[0-9]+' || echo "1")
+    local minor=$(echo "$version" | grep -oP '\.[0-9]+$' | tr -d '.' || echo "0")
+
+    minor=$((minor + 1))
+    echo "${major}.${minor}"
+}
+
+# Parse arguments
+if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    _show_help
+fi
+
+_prd_file="$1"
+_version="$2"
+
+# Validate
+if [[ ! -f "$_prd_file" ]]; then
+    echo "❌ PRD não encontrado: $_prd_file"
+    exit 1
+fi
+
+# Get current version from metatag BEFORE any changes
+_current_version=$(grep -oP 'PRD-VERSION: \K[0-9.]+' "$_prd_file" || echo "1.0")
+
+# Auto-increment version if not provided
+if [[ -z "$_version" ]]; then
+    _version=$(_increment_version "$_current_version")
+fi
+
+# Persistent backup file (tracks last published version)
+_persistent_backup="${_prd_file}.last_published"
+
+# Create persistent backup if it doesn't exist (first run or manual edit detected)
+if [[ ! -f "$_persistent_backup" ]]; then
+    echo "📦 Criando backup da versão publicada..."
+    cp "$_prd_file" "$_persistent_backup"
+fi
+
+# Extract issue number from metatag first (priority)
+_issue_number=$(grep -oP 'ISSUE-NUMBER: \K[0-9]+' "$_prd_file" || echo "")
+
+# If not in metatags, try content
+if [[ -z "$_issue_number" ]]; then
+    _issue_number=$(grep -oP 'Issue #[0-9]+' "$_prd_file" | grep -oP '[0-9]+' || echo "")
+fi
+
+# If not in content, try filename (hpos-README-prd-390.md -> 390)
+if [[ -z "$_issue_number" ]]; then
+    _issue_number=$(basename "$_prd_file" | grep -oP 'prd-\K[0-9]+' || echo "")
+fi
+
+# If still not found, ask user
+if [[ -z "$_issue_number" ]]; then
+    echo "⚠️  Não foi possível encontrar número da issue automaticamente"
+    read -p "Digite o número da issue: " _issue_number
+fi
+
+if [[ -z "$_issue_number" ]]; then
+    echo "❌ Número da issue é obrigatório"
+    exit 1
+fi
+
+# Detect platform
+_platform=$(_detect_platform)
+_platform_name="GitHub"
+[[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
+
+# Update metatags in PRD file
+_timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+echo "📝 Atualizando metatags..."
+
+# Update PRD-VERSION
+sed -i "s/PRD-VERSION: .*/PRD-VERSION: $_version/" "$_prd_file"
+
+# Update PRD-UPDATED
+sed -i "s/PRD-UPDATED: .*/PRD-UPDATED: $_timestamp/" "$_prd_file"
+
+# Also update version in the body if it exists (for backwards compatibility)
+sed -i -E "s/\*\*Versão\*\*.*v[0-9]+\.[0-9]+/\*\*Versão\*\*: v$_version/" "$_prd_file"
+sed -i -E "s/\*\*Atualizado\*\*.*$/\*\*Atualizado\*\*: $(date +"%d\/%m\/%Y %H:%M")/" "$_prd_file"
+
+# Calculate diff (comparing against last published version)
+echo "🔍 Calculando mudanças..."
+
+# Find title line in both files
+_backup_line=$(grep -n "^# " "$_persistent_backup" | head -1 | cut -d: -f1)
+_current_line=$(grep -n "^# " "$_prd_file" | head -1 | cut -d: -f1)
+
+# Extract content (excluding metatags)
+_backup_content=$(tail -n +$_backup_line "$_persistent_backup")
+_current_content=$(tail -n +$_current_line "$_prd_file")
+
+# Create temp files for diff
+echo "$_backup_content" > /tmp/prd_last_published.txt
+echo "$_current_content" > /tmp/prd_current.txt
+
+# Calculate diff
+_diff=$(diff -u /tmp/prd_last_published.txt /tmp/prd_current.txt | tail -n +3 || echo "")
+
+# Clean up temp files
+rm -f /tmp/prd_last_published.txt /tmp/prd_current.txt
+
+if [[ -z "$_diff" ]]; then
+    _diff="# Nenhuma mudança de conteúdo detectada (apenas atualização de metatags)"
+fi
+
+echo "   Diff lines: $(echo "$_diff" | wc -l)"
+
+# Get PRD content
+_prd_content=$(cat "$_prd_file")
+
+# Extract PRD-ID
+_prd_id=$(grep -oP 'PRD-ID: \K\w+' "$_prd_file" || echo "unknown")
+
+# Create comment body
+_comment_body="## 📋 PRD v$_version - PRD Atualizado
+
+**PRD-ID**: $_prd_id
+**Atualizado**: $(date +"%d/%m/%Y %H:%M")
+**Status**: 🟡 Em Revisão
+
+### Mudanças desde v$_current_version:
+\`\`\`diff
+$_diff
+\`\`\`
+
+### Documento Completo:
+$_prd_content
+
+---
+
+**Versões anteriores**: v$_current_version"
+
+# Publish to issue
+echo "💬 Publicando na issue #$_issue_number ($_platform_name)..."
+issue_create_comment "$_issue_number" "$_comment_body"
+
+# Update persistent backup to current version (for next diff)
+cp "$_prd_file" "$_persistent_backup"
+
+echo ""
+echo "✅ PRD atualizado com sucesso!"
+echo "📄 Arquivo: $_prd_file"
+echo "🏷️  PRD-ID: $_prd_id"
+echo "🔗 Issue: #$_issue_number"
+echo "📊 Versão: v$_version (anterior: v$_current_version)"
+echo "🔧 Plataforma: $_platform_name"

@@ -1,0 +1,171 @@
+#!/bin/bash
+#
+# Common functions for PRD versioning scripts
+# Supports both GitHub (gh) and GitLab (glab) CLI
+
+# Detect which platform we're using
+_detect_platform() {
+    # Check environment variable first
+    if [[ -n "$PRD_PLATFORM" ]]; then
+        echo "$PRD_PLATFORM"
+        return
+    fi
+
+    # Check git remote for platform patterns
+    local remote
+    remote=$(git remote -v 2>/dev/null || echo "")
+
+    if echo "$remote" | grep -qiE '(gitlab\.|@gitlab|//gitlab)'; then
+        echo "gitlab"
+    elif echo "$remote" | grep -qiE '(github\.|@github|//github)'; then
+        echo "github"
+    else
+        # Fallback: check which CLI is available
+        if command -v glab &>/dev/null && ! command -v gh &>/dev/null; then
+            echo "gitlab"
+        elif command -v gh &>/dev/null && ! command -v glab &>/dev/null; then
+            echo "github"
+        else
+            echo "unknown"
+        fi
+    fi
+}
+
+# Get issue URL from output
+_get_issue_url_from_output() {
+    local output="$1"
+    echo "$output" | grep -oE 'https://[^ ]+' | head -1
+}
+
+# Get issue number from URL
+_get_issue_number_from_url() {
+    local url="$1"
+    # GitHub: https://github.com/owner/repo/issues/123
+    # GitLab: https://gitlab.com/owner/repo/-/issues/123
+    echo "$url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+'
+}
+
+# Create issue
+issue_create() {
+    local platform=$(_detect_platform)
+    local title="$1"
+    local body="$2"
+    local labels="$3"
+
+    case "$platform" in
+        gitlab)
+            if [[ -n "$labels" ]]; then
+                glab issue create -t "$title" -d "$body" -l "$labels"
+            else
+                glab issue create -t "$title" -d "$body"
+            fi
+            ;;
+        github)
+            if [[ -n "$labels" ]]; then
+                gh issue create --title "$title" --body "$body" --label "$labels"
+            else
+                gh issue create --title "$title" --body "$body"
+            fi
+            ;;
+        *)
+            echo "❌ Platform not detected. Please set PRD_PLATFORM=github or PRD_PLATFORM=gitlab"
+            exit 1
+            ;;
+    esac
+}
+
+# Get issue title
+issue_get_title() {
+    local issue_number="$1"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            glab issue view "$issue_number" 2>/dev/null | grep -oP 'title:\s*\K.*' | head -1
+            ;;
+        github)
+            gh issue view "$issue_number" --json title --jq .title 2>/dev/null
+            ;;
+        *)
+            echo "❌ Platform not detected"
+            return 1
+            ;;
+    esac
+}
+
+# Get issue body/description
+issue_get_body() {
+    local issue_number="$1"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            glab issue view "$issue_number" 2>/dev/null | sed -n '/^---$/,/^---$/p' | sed '1d;$d'
+            ;;
+        github)
+            gh issue view "$issue_number" --json body --jq .body 2>/dev/null
+            ;;
+        *)
+            echo "❌ Platform not detected"
+            return 1
+            ;;
+    esac
+}
+
+# Get issue comments/notes
+issue_get_comments() {
+    local issue_number="$1"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            # Use API to get notes as JSON
+            glab api "/projects/:fullpath/issues/$issue_number/notes" 2>/dev/null
+            ;;
+        github)
+            gh api "/repos/$(gh repo view --json owner,name -q '.owner.login + \"/\" + .name')/issues/$issue_number/comments" 2>/dev/null
+            ;;
+        *)
+            echo "❌ Platform not detected"
+            return 1
+            ;;
+    esac
+}
+
+# Create comment/note on issue
+issue_create_comment() {
+    local issue_number="$1"
+    local comment_body="$2"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            glab issue note "$issue_number" -m "$comment_body"
+            ;;
+        github)
+            gh issue comment "$issue_number" --body "$comment_body"
+            ;;
+        *)
+            echo "❌ Platform not detected"
+            return 1
+            ;;
+    esac
+}
+
+# Check if issue exists
+issue_exists() {
+    local issue_number="$1"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            glab issue view "$issue_number" &>/dev/null
+            ;;
+        github)
+            gh issue view "$issue_number" &>/dev/null
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
