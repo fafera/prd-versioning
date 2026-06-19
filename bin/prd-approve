@@ -47,8 +47,13 @@ elif [[ ! "$_version" =~ ^v[0-9] ]]; then
     _version="v$_version"
 fi
 
-# Extract issue number from PRD content or filename
-_issue_number=$(grep -oP 'Issue #[0-9]+' "$_prd_file" | head -1 | grep -oP '[0-9]+' || echo "")
+# Extract issue number from metatag first (priority)
+_issue_number=$(grep -oP 'ISSUE-NUMBER: \K[0-9]+' "$_prd_file" || echo "")
+
+# If not in metatags, try content
+if [[ -z "$_issue_number" ]]; then
+    _issue_number=$(grep -oP 'Issue #[0-9]+' "$_prd_file" | head -1 | grep -oP '[0-9]+' || echo "")
+fi
 
 # If not in content, try filename
 if [[ -z "$_issue_number" ]]; then
@@ -67,7 +72,7 @@ if [[ -z "$_issue_number" ]]; then
 fi
 
 # Get PRD-ID
-_prd_id=$(grep -oP 'PRD-ID: \K\w+' "$_prd_file" || echo "unknown")
+_prd_id=$(grep -oP 'PRD-ID: \K[A-Za-z0-9_-]+' "$_prd_file" || echo "unknown")
 
 # Detect platform
 _platform=$(_detect_platform)

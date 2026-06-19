@@ -123,7 +123,29 @@ issue_get_comments() {
             glab api "/projects/:fullpath/issues/$issue_number/notes" 2>/dev/null
             ;;
         github)
-            gh api "/repos/$(gh repo view --json owner,name -q '.owner.login + \"/\" + .name')/issues/$issue_number/comments" 2>/dev/null
+            local repo
+            repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+            gh api "/repos/$repo/issues/$issue_number/comments" 2>/dev/null
+            ;;
+        *)
+            echo "❌ Platform not detected"
+            return 1
+            ;;
+    esac
+}
+
+# Update issue description/body
+issue_update_body() {
+    local issue_number="$1"
+    local body="$2"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            glab issue update "$issue_number" -d "$body"
+            ;;
+        github)
+            gh issue edit "$issue_number" --body "$body"
             ;;
         *)
             echo "❌ Platform not detected"
