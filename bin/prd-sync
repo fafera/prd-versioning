@@ -65,12 +65,13 @@ if [[ -z "$_prd_content" ]]; then
 fi
 
 # Extract PRD-ID from content
-_prd_id=$(echo "$_prd_content" | grep -oP 'PRD-ID: \K[A-Za-z0-9_-]+' | head -1 || echo "")
+_prd_id=$(echo "$_prd_content" | grep -oP 'PRD-ID: \K\S+' | head -1 || echo "")
 
 # If still no PRD-ID, generate one based on issue title
 if [[ -z "$_prd_id" ]]; then
     # Create slug from issue title
-    _prd_id=$(echo "$_issue_title" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -d '[:punct:]' | cut -c1-30)
+    _prd_id=$(echo "$_issue_title" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-30 | sed -E 's/-+$//')
+    [[ -z "$_prd_id" ]] && _prd_id=$(echo "$_issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-30 | sed -E 's/-+$//')
 fi
 
 # Create local filename based on PRD-ID and issue number

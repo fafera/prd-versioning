@@ -113,14 +113,6 @@ if [[ -z "$_version" ]]; then
     _version=$(_increment_version "$_from_version")
 fi
 
-# Update metatags + volatile body lines in the local file
-_timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-echo "📝 Atualizando metatags para v$_version..."
-sed -i "s/PRD-VERSION: .*/PRD-VERSION: $_version/" "$_prd_file"
-sed -i "s/PRD-UPDATED: .*/PRD-UPDATED: $_timestamp/" "$_prd_file"
-sed -i -E "s/\*\*Versão\*\*.*$/\*\*Versão\*\*: v$_version/" "$_prd_file"
-sed -i -E "s/\*\*Atualizado\*\*.*$/\*\*Atualizado\*\*: $(date +"%d\/%m\/%Y %H:%M")/" "$_prd_file"
-
 # Build normalized temp files for diffing (volatile lines neutralized)
 _tmp_dir=$(mktemp -d)
 trap 'rm -rf "$_tmp_dir"' EXIT
@@ -145,8 +137,17 @@ fi
 
 echo "   Linhas de diff: $(echo "$_diff" | wc -l)"
 
+# Stamp metatags + volatile body lines only after confirming a real change,
+# so an aborted no-op update never leaves the local file ahead of the issue.
+_timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+echo "📝 Atualizando metatags para v$_version..."
+sed -i "s/PRD-VERSION: .*/PRD-VERSION: $_version/" "$_prd_file"
+sed -i "s/PRD-UPDATED: .*/PRD-UPDATED: $_timestamp/" "$_prd_file"
+sed -i -E "s/\*\*Versão\*\*.*$/\*\*Versão\*\*: v$_version/" "$_prd_file"
+sed -i -E "s/\*\*Atualizado\*\*.*$/\*\*Atualizado\*\*: $(date +"%d\/%m\/%Y %H:%M")/" "$_prd_file"
+
 # Extract PRD-ID
-_prd_id=$(grep -oP 'PRD-ID: \K[A-Za-z0-9_-]+' "$_prd_file" || echo "unknown")
+_prd_id=$(grep -oP 'PRD-ID: \K\S+' "$_prd_file" || echo "unknown")
 
 # Build comment: hidden machine-readable chain metatags + visible diff only
 _comment_body="<!--

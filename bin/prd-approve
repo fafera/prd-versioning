@@ -72,7 +72,7 @@ if [[ -z "$_issue_number" ]]; then
 fi
 
 # Get PRD-ID
-_prd_id=$(grep -oP 'PRD-ID: \K[A-Za-z0-9_-]+' "$_prd_file" || echo "unknown")
+_prd_id=$(grep -oP 'PRD-ID: \K\S+' "$_prd_file" || echo "unknown")
 
 # Detect platform
 _platform=$(_detect_platform)

@@ -53,7 +53,7 @@ if [[ -z "$_desc" ]]; then
 fi
 
 _current=$(echo "$_desc" | grep -oP 'PRD-VERSION: \K[0-9.]+' | head -1 || echo "")
-_prd_id=$(echo "$_desc" | grep -oP 'PRD-ID: \K[A-Za-z0-9_-]+' | head -1 || echo "")
+_prd_id=$(echo "$_desc" | grep -oP 'PRD-ID: \K\S+' | head -1 || echo "")
 
 if [[ -z "$_current" ]]; then
     echo "❌ A descrição não tem metatag PRD-VERSION."
@@ -131,7 +131,7 @@ sed -i \
     -e "s/^PRD-VERSION: NORMALIZED/PRD-VERSION: $_target/" \
     -e "s/^PRD-UPDATED: NORMALIZED/PRD-UPDATED: $_now_full/" \
     -e "s/^\*\*Versão\*\*: NORMALIZED/\*\*Versão\*\*: v$_target/" \
-    -e "s/^\*\*Atualizado\*\*: NORMALIZED/\*\*Atualizado\*\*: $_now_br/" \
+    -e "s|^\*\*Atualizado\*\*: NORMALIZED|\*\*Atualizado\*\*: $_now_br|" \
     -e "s|^\*\*Status\*\*: NORMALIZED|\*\*Status\*\*: 🟡 Em Revisão (restaurado de v$_target)|" \
     "$_working"
 
