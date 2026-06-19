@@ -94,14 +94,32 @@ mkdir -p prd
 echo "💾 Salvando PRD localmente..."
 echo "$_prd_content" > "$_prd_file"
 
-# If PRD doesn't have metatags yet, add them
+# If PRD doesn't have metatags yet (legacy/pre-existing issue), adopt it:
+# prepend the metatag block AND the human-readable status header, so the
+# description carries version/status and prd-approve has a line to update.
+# The header is contiguous with the metatags (top of the file) so prd-update's
+# baseline alignment keeps it out of the first diff.
 if ! grep -q "PRD-ID:" "$_prd_file"; then
-    echo "🏷️  Adicionando metatags ao PRD..."
+    echo "🏷️  Adicionando metatags e cabeçalho de status ao PRD..."
     _timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    _date_br=$(date +"%d/%m/%Y %H:%M")
     _version=$(grep -oP 'Versão.*v\K[0-9]+\.[0-9]+' "$_prd_file" || echo "1.0")
 
-    # Add metatags at the beginning
-    sed -i "1s/^/<!--\nPRD-ID: $_prd_id\nPRD-VERSION: $_version\nISSUE-NUMBER: $_issue_number\nPRD-UPDATED: $_timestamp\n-->\n\n/" "$_prd_file"
+    _header=$(cat <<EOF
+<!--
+PRD-ID: $_prd_id
+PRD-VERSION: $_version
+ISSUE-NUMBER: $_issue_number
+PRD-UPDATED: $_timestamp
+-->
+
+**Versão**: v$_version
+**Atualizado**: $_date_br
+**Status**: 🟡 Em Revisão
+
+EOF
+)
+    printf '%s\n\n%s\n' "$_header" "$(cat "$_prd_file")" > "$_prd_file"
 fi
 
 echo ""

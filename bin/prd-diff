@@ -55,7 +55,13 @@ _local_version=$(grep -oP 'PRD-VERSION: \K[0-9.]+' "$_prd_file" | head -1 || ech
 
 _tmp_dir=$(mktemp -d)
 trap 'rm -rf "$_tmp_dir"' EXIT
-echo "$_desc" | _normalize_volatile > "$_tmp_dir/published"
+# Match prd-update: align a metatag-less (legacy) baseline with the local
+# file's scaffold so the preview mirrors what would actually be published.
+if echo "$_desc" | grep -q 'PRD-ID:'; then
+    echo "$_desc" | _normalize_volatile > "$_tmp_dir/published"
+else
+    { _leading_scaffold < "$_prd_file"; echo "$_desc"; } | _normalize_volatile > "$_tmp_dir/published"
+fi
 _normalize_volatile < "$_prd_file" > "$_tmp_dir/local"
 
 echo "🔍 Diff: descrição publicada (v$_from_version) → local (v$_local_version)"
