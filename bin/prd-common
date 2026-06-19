@@ -3,6 +3,32 @@
 # Common functions for PRD versioning scripts
 # Supports both GitHub (gh) and GitLab (glab) CLI
 
+# Normalize volatile lines (stdin -> stdout)
+#
+# Replaces the value of version/timestamp/status lines with a fixed
+# placeholder so they never appear as changes (or as mismatched context)
+# in the version diffs. Both prd-update (when generating a patch) and
+# prd-restore (before reverse-applying) MUST run content through this so
+# the patch context matches on both sides.
+_normalize_volatile() {
+    sed -E \
+        -e 's/^(PRD-VERSION:).*/\1 NORMALIZED/' \
+        -e 's/^(PRD-UPDATED:).*/\1 NORMALIZED/' \
+        -e 's/^(\*\*Versão\*\*).*/\1: NORMALIZED/' \
+        -e 's/^(\*\*Atualizado\*\*).*/\1: NORMALIZED/' \
+        -e 's/^(\*\*Status\*\*).*/\1: NORMALIZED/'
+}
+
+# Extract the unified diff inside the first ```diff fenced block of a comment
+# body (stdin -> stdout). Used by prd-restore to recover the patch text.
+_extract_diff_block() {
+    awk '
+        /^```diff[[:space:]]*$/ { inblock=1; next }
+        /^```[[:space:]]*$/     { if (inblock) { inblock=0 } ; next }
+        inblock { print }
+    '
+}
+
 # Detect which platform we're using
 _detect_platform() {
     # Check environment variable first

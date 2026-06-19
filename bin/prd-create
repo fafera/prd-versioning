@@ -170,9 +170,6 @@ sed -i "s/# PRD: $_title/# PRD para Issue #$_issue_number: $_title/" "$_prd_file
 echo "🔄 Sincronizando corpo da issue..."
 issue_update_body "$_issue_number" "$(cat "$_prd_file")" > /dev/null
 
-# Seed published backup so the first prd-update diffs against v1.0
-cp "$_prd_file" "${_prd_file}.last_published"
-
 echo ""
 echo "✅ Issue criada com sucesso!"
 echo "🔗 Issue: #$_issue_number - $_issue_url"

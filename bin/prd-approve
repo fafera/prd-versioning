@@ -102,10 +102,17 @@ _approve_body="## ✅ PRD $_version Aprovado
 echo "💬 Publicando aprovação na issue #$_issue_number ($_platform_name)..."
 issue_create_comment "$_issue_number" "$_approve_body"
 
-# Update status in PRD file
-echo "📝 Atualizando status no PRD..."
+# Update status line in the LIVE issue description (source of truth).
+# Status is a volatile line, normalized out of the diff chain, so editing it
+# here does not break prd-restore.
+echo "📝 Atualizando status na descrição da issue..."
+_desc=$(issue_get_body "$_issue_number" || echo "")
+if [[ -n "$_desc" ]] && echo "$_desc" | grep -q '\*\*Status\*\*:'; then
+    _new_desc=$(echo "$_desc" | sed -E "s/\*\*Status\*\*.*$/\*\*Status\*\*: 🟢 Aprovado (aprovado em $(date +"%d\/%m\/%Y"))/")
+    issue_update_body "$_issue_number" "$_new_desc" > /dev/null
+fi
 
-# Update status line if it exists
+# Update status in local PRD file too (if present)
 if grep -q '\*\*Status\*\*:' "$_prd_file"; then
     sed -i -E "s/\*\*Status\*\*.*$/\*\*Status\*\*: 🟢 Aprovado (aprovado em $(date +"%d\/%m\/%Y"))/" "$_prd_file"
 fi

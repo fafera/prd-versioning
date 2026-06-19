@@ -3,9 +3,9 @@
 # Sincronizar PRD mais recente da issue para arquivo local (Cenário 2)
 # Uso: ./bin/prd-sync <issue-number>
 #
-# O script busca:
-# 1. Comentários com metatag PRD-ID (usa o mais recente baseado em PRD-UPDATED)
-# 2. Se não encontrar, usa a descrição da issue
+# O PRD mais recente vive SEMPRE na descrição da issue (fonte da verdade).
+# Os comentários contêm apenas diffs de versão; nunca reconstruímos o PRD
+# a partir deles. Para recuperar uma versão antiga, use ./bin/prd-restore.
 
 set -e
 
@@ -20,10 +20,8 @@ _show_help() {
     echo "Argumentos:"
     echo "  issue-number  Número da issue (GitHub ou GitLab)"
     echo ""
-    echo "O script busca o PRD mais recente:"
-    echo "  1. Procura comentários com metatag PRD-ID"
-    echo "  2. Usa o mais recente baseado em PRD-UPDATED"
-    echo "  3. Se não encontrar, usa a descrição da issue"
+    echo "O PRD mais recente vive SEMPRE na descrição da issue."
+    echo "Os comentários contêm apenas diffs (ver ./bin/prd-restore)."
     echo ""
     echo "Nota: Detecta automaticamente GitHub ou GitLab"
     echo "      Cria arquivo prd/hpos-README-prd-<issue>.md"
@@ -56,47 +54,14 @@ if [[ -z "$_issue_title" ]]; then
     exit 1
 fi
 
-# Search for PRD in comments (with PRD-ID metatag)
-echo "🔍 Buscando PRD em comentários..."
-_prd_content=""
-_prd_updated=""
+# The issue DESCRIPTION is always the latest full PRD (source of truth).
+# Comments hold only version diffs, so we never reconstruct the PRD from them.
+echo "📄 Lendo PRD da descrição da issue (estado mais recente)..."
+_prd_content=$(issue_get_body "$_issue_number")
 
-if [[ "$_platform" == "github" ]]; then
-    # GitHub: use API and jq
-    _comments=$(issue_get_comments "$_issue_number")
-
-    # Find comments with PRD-ID metatag
-    if command -v jq &>/dev/null && [[ -n "$_comments" ]]; then
-        _prd_comments=$(echo "$_comments" | jq -r '.[] | select(.body | contains("PRD-ID")) | {body: .body, updated: .updated_at, created: .created_at} | @json' 2>/dev/null || echo "")
-
-        if [[ -n "$_prd_comments" ]]; then
-            echo "📋 PRDs encontrados em comentários, buscando mais recente..."
-            _latest_comment=$(echo "$_prd_comments" | jq -rs 'sort_by(.updated) | reverse | .[0]')
-            _prd_content=$(echo "$_latest_comment" | jq -r '.body')
-            _prd_updated=$(echo "$_prd_content" | grep -oP 'PRD-UPDATED: \K.*' | head -1 || echo "")
-        fi
-    fi
-elif [[ "$_platform" == "gitlab" ]]; then
-    # GitLab: use API and jq
-    _comments=$(issue_get_comments "$_issue_number")
-
-    # Find notes with PRD-ID metatag
-    if command -v jq &>/dev/null && [[ -n "$_comments" ]]; then
-        _prd_notes=$(echo "$_comments" | jq -r '.[] | select(.body | contains("PRD-ID")) | {body: .body, updated: .updated_at, created: .created_at} | @json' 2>/dev/null || echo "")
-
-        if [[ -n "$_prd_notes" ]]; then
-            echo "📋 PRDs encontrados em comentários, buscando mais recente..."
-            _latest_note=$(echo "$_prd_notes" | jq -rs 'sort_by(.updated) | reverse | .[0]')
-            _prd_content=$(echo "$_latest_note" | jq -r '.body')
-            _prd_updated=$(echo "$_prd_content" | grep -oP 'PRD-UPDATED: \K.*' | head -1 || echo "")
-        fi
-    fi
-fi
-
-# If no PRD in comments, use issue description
 if [[ -z "$_prd_content" ]]; then
-    echo "📄 Nenhum PRD encontrado em comentários, usando descrição da issue..."
-    _prd_content=$(issue_get_body "$_issue_number")
+    echo "❌ Descrição da issue vazia — nada para sincronizar"
+    exit 1
 fi
 
 # Extract PRD-ID from content
