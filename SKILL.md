@@ -190,6 +190,8 @@ vim prd/hpos-README-prd-390.md
 
 **prd-approve** edits the `**Status**` line on the live description (🟢 Aprovado) and posts an approval comment. Status is volatile (normalized out of the chain), so this never breaks `prd-restore`.
 
+**Adopting a pre-existing issue** (description has no PRD metatags): `prd-sync` prepends the metatag block **and** a `**Versão**/**Atualizado**/**Status**` header, so the description carries status from then on and `prd-approve` has a line to flip. On the first `prd-update`, the live (metatag-less) description is aligned against the local file's scaffold before diffing, so the metatag/header block never leaks into the diff comment as `+`-added `NORMALIZED` lines — the first comment shows only real content changes.
+
 **Legacy issues** (old model, with full PRDs in comments): clean break. The new model applies from the next `prd-update` onward; `prd-restore` only reaches versions created by the new flow.
 
 ## Common Mistakes

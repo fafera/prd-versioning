@@ -19,6 +19,26 @@ _normalize_volatile() {
         -e 's/^(\*\*Status\*\*).*/\1: NORMALIZED/'
 }
 
+# Print the contiguous "scaffold" at the top of a PRD (stdin -> stdout): the
+# metatag comment block plus the human-readable header lines (**Versão**/
+# **Atualizado**/**Criado**/**Status**) and the blank lines among them. Stops
+# at the first line of substantive content.
+#
+# Used to align a metatag-less (legacy/pre-existing) issue description with the
+# local file before diffing. Without this, adopting a legacy issue emits the
+# whole scaffold as spurious "+added" lines in the first diff — which leaked
+# as "PRD-VERSION: NORMALIZED" / "PRD-UPDATED: NORMALIZED" into the published
+# comment.
+_leading_scaffold() {
+    awk '
+        NR==1 && $0 ~ /^<!--/ { inblock=1; print; next }
+        inblock { print; if ($0 ~ /-->/) inblock=0; next }
+        /^[[:space:]]*$/ { print; next }
+        /^\*\*(Versão|Versao|Atualizado|Criado|Status)\*\*/ { print; next }
+        { exit }
+    '
+}
+
 # Extract the unified diff inside the first ```diff fenced block of a comment
 # body (stdin -> stdout). Used by prd-restore to recover the patch text.
 _extract_diff_block() {

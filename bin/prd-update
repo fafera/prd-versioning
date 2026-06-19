@@ -113,12 +113,22 @@ if [[ -z "$_version" ]]; then
     _version=$(_increment_version "$_from_version")
 fi
 
-# Build normalized temp files for diffing (volatile lines neutralized)
+# Build normalized temp files for diffing (volatile lines neutralized).
+#
+# Legacy adoption: if the live description has no metatag block, its scaffold
+# (metatags + header) differs from the local file only by being absent. Prepend
+# the local file's leading scaffold to the baseline so the scaffold is symmetric
+# and never shows up as spurious "+added" lines in the diff.
 _tmp_dir=$(mktemp -d)
 trap 'rm -rf "$_tmp_dir"' EXIT
 _before="$_tmp_dir/before"
 _after="$_tmp_dir/after"
-echo "$_desc" | _normalize_volatile > "$_before"
+if echo "$_desc" | grep -q 'PRD-ID:'; then
+    echo "$_desc" | _normalize_volatile > "$_before"
+else
+    echo "🩹 Descrição sem metatags (issue legada) — alinhando baseline..."
+    { _leading_scaffold < "$_prd_file"; echo "$_desc"; } | _normalize_volatile > "$_before"
+fi
 _normalize_volatile < "$_prd_file" > "$_after"
 
 # Generate an applicable unified diff (clean header labels for readability;
