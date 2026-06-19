@@ -87,19 +87,20 @@ PRD-UPDATED: 2026-04-15 14:30:00
 
 ## Platform Detection
 
-The skill automatically detects whether you're working in a GitHub or GitLab repository:
+The skill automatically detects whether you're working in a GitHub or GitLab repository, in this order:
 
 1. **Environment Variable**: Set `PRD_PLATFORM=github` or `PRD_PLATFORM=gitlab` to force a specific platform
-2. **Git Remote**: If not set, checks `git remote -v` for `gitlab` or `github` in the URL
-3. **Fallback**: Defaults to GitHub if detection fails
+2. **Obvious host name**: checks `git remote -v` for `gitlab` or `github` in the URL
+3. **CLI host config**: matches the remote's host against the hosts `glab`/`gh` have authenticated to (reads `~/.config/glab-cli/config.yml` and `~/.config/gh/hosts.yml`). This covers **self-hosted instances on custom domains** (e.g. `greatcode.aztecweb.net`) with no extra configuration — just authenticate the CLI first.
+4. **Fallback**: whichever CLI is installed; `unknown` if it can't tell (then set `PRD_PLATFORM`).
 
 **Requirements**:
 - GitHub: `gh` CLI installed and authenticated
-- GitLab: `glab` CLI installed and authenticated
+- GitLab: `glab` CLI installed and authenticated, plus `jq` (used to parse the GitLab API responses)
 
-Both platforms use the same workflow and commands - the skill handles the differences internally.
+GitLab data is read through `glab api` (JSON), so descriptions are handled robustly even when the PRD body itself contains `---` separators or other markup. Both platforms use the same workflow and commands — the skill handles the differences internally.
 
-**Note for self-hosted GitLab instances**: If your GitLab instance uses a custom domain (not containing "gitlab" in the URL), set the `PRD_PLATFORM=gitlab` environment variable to force GitLab mode.
+**Self-hosted GitLab**: authenticate once with `glab auth login --hostname <your-host>`. Detection then works automatically. If you skip auth or detection still fails, force it with `PRD_PLATFORM=gitlab`.
 
 ## Implementation
 
