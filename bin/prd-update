@@ -160,9 +160,9 @@ _comment_body="## 📋 PRD v$_version - PRD Atualizado
 **Status**: 🟡 Em Revisão
 
 ### Mudanças desde v$_current_version:
-\`\`\`diff
+\`\`\`\`diff
 $_diff
-\`\`\`
+\`\`\`\`
 
 ### Documento Completo:
 $_prd_content

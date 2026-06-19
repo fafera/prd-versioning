@@ -54,9 +54,9 @@ echo ""
 
 # Show diff
 echo "📊 Mudanças desde versão anterior:"
-echo '```diff'
+echo '````diff'
 diff -u "$_backup_file" "$_prd_file" | tail -n +3
-echo '```'
+echo '````'
 echo ""
 
 echo "💡 Para publicar estas mudanças:"
