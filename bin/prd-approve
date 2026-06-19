@@ -79,8 +79,11 @@ _platform=$(_detect_platform)
 _platform_name="GitHub"
 [[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
 
-# Get issue title
+# Get issue title and build branch name (<issue-id>-<titulo-slugificado>)
 _issue_title=$(issue_get_title "$_issue_number")
+_title_slug=$(echo "$_issue_title" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-50 | sed -E 's/-+$//')
+[[ -z "$_title_slug" ]] && _title_slug=$(echo "$_issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-50 | sed -E 's/-+$//')
+_branch="$_issue_number-$_title_slug"
 
 # Create approval comment
 _approve_body="## ✅ PRD $_version Aprovado
@@ -89,14 +92,8 @@ _approve_body="## ✅ PRD $_version Aprovado
 **Aprovado por**: $(git config user.name 2>/dev/null || echo "Unknown") em $(date +"%d/%m/%Y %H:%M")
 
 ### Próximos Passos:
-1. Criar branch de implementação: \`git checkout -b feature/issue-$_issue_number\`
-2. Seguir o PRD: $_prd_file
-3. Criar merge/pull request quando pronto
-
----
-
-📋 **PRD**: $_prd_file
-🔗 **Issue**: #$_issue_number"
+1. Criar branch de implementação: \`git checkout -b $_branch\`
+2. Criar merge/pull request quando pronto"
 
 # Publish approval comment
 echo "💬 Publicando aprovação na issue #$_issue_number ($_platform_name)..."
@@ -125,4 +122,4 @@ echo "🔗 Issue: #$_issue_number"
 echo "🔧 Plataforma: $_platform_name"
 echo ""
 echo "📋 Para começar a implementação:"
-echo "   git checkout -b feature/issue-$_issue_number"
+echo "   git checkout -b $_branch"
