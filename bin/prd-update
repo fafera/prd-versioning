@@ -150,7 +150,7 @@ echo "   Diff lines: $(echo "$_diff" | wc -l)"
 _prd_content=$(cat "$_prd_file")
 
 # Extract PRD-ID
-_prd_id=$(grep -oP 'PRD-ID: \K\w+' "$_prd_file" || echo "unknown")
+_prd_id=$(grep -oP 'PRD-ID: \K[A-Za-z0-9_-]+' "$_prd_file" || echo "unknown")
 
 # Create comment body
 _comment_body="## 📋 PRD v$_version - PRD Atualizado
