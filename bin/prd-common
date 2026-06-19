@@ -3,6 +3,32 @@
 # Common functions for PRD versioning scripts
 # Supports both GitHub (gh) and GitLab (glab) CLI
 
+# Normalize volatile lines (stdin -> stdout)
+#
+# Replaces the value of version/timestamp/status lines with a fixed
+# placeholder so they never appear as changes (or as mismatched context)
+# in the version diffs. Both prd-update (when generating a patch) and
+# prd-restore (before reverse-applying) MUST run content through this so
+# the patch context matches on both sides.
+_normalize_volatile() {
+    sed -E \
+        -e 's/^(PRD-VERSION:).*/\1 NORMALIZED/' \
+        -e 's/^(PRD-UPDATED:).*/\1 NORMALIZED/' \
+        -e 's/^(\*\*Versão\*\*).*/\1: NORMALIZED/' \
+        -e 's/^(\*\*Atualizado\*\*).*/\1: NORMALIZED/' \
+        -e 's/^(\*\*Status\*\*).*/\1: NORMALIZED/'
+}
+
+# Extract the unified diff inside the first ```diff fenced block of a comment
+# body (stdin -> stdout). Used by prd-restore to recover the patch text.
+_extract_diff_block() {
+    awk '
+        /^```diff[[:space:]]*$/ { inblock=1; next }
+        /^```[[:space:]]*$/     { if (inblock) { inblock=0 } ; next }
+        inblock { print }
+    '
+}
+
 # Detect which platform we're using
 _detect_platform() {
     # Check environment variable first
@@ -123,7 +149,29 @@ issue_get_comments() {
             glab api "/projects/:fullpath/issues/$issue_number/notes" 2>/dev/null
             ;;
         github)
-            gh api "/repos/$(gh repo view --json owner,name -q '.owner.login + \"/\" + .name')/issues/$issue_number/comments" 2>/dev/null
+            local repo
+            repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+            gh api "/repos/$repo/issues/$issue_number/comments" 2>/dev/null
+            ;;
+        *)
+            echo "❌ Platform not detected"
+            return 1
+            ;;
+    esac
+}
+
+# Update issue description/body
+issue_update_body() {
+    local issue_number="$1"
+    local body="$2"
+    local platform=$(_detect_platform)
+
+    case "$platform" in
+        gitlab)
+            glab issue update "$issue_number" -d "$body"
+            ;;
+        github)
+            gh issue edit "$issue_number" --body "$body"
             ;;
         *)
             echo "❌ Platform not detected"
