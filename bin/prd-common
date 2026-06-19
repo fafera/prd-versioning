@@ -29,7 +29,19 @@ _extract_diff_block() {
     '
 }
 
+# Extract the host (e.g. greatcode.aztecweb.net) from the origin remote URL,
+# handling both ssh (git@host:path) and https (https://host/path) forms.
+_remote_host() {
+    local url
+    url=$(git remote get-url origin 2>/dev/null || echo "")
+    [[ -z "$url" ]] && url=$(git remote -v 2>/dev/null | grep -oE '\S+\.\S+' | head -1)
+    echo "$url" | sed -E 's#^[a-zA-Z]+://##; s#^[^@]+@##; s#[:/].*$##'
+}
+
 # Detect which platform we're using
+#
+# Order: explicit override -> obvious host name -> CLI host config
+# (catches self-hosted GitLab/GitHub on custom domains) -> CLI availability.
 _detect_platform() {
     # Check environment variable first
     if [[ -n "$PRD_PLATFORM" ]]; then
@@ -37,23 +49,42 @@ _detect_platform() {
         return
     fi
 
-    # Check git remote for platform patterns
+    # Check git remote for obvious platform patterns
     local remote
     remote=$(git remote -v 2>/dev/null || echo "")
 
     if echo "$remote" | grep -qiE '(gitlab\.|@gitlab|//gitlab)'; then
         echo "gitlab"
+        return
     elif echo "$remote" | grep -qiE '(github\.|@github|//github)'; then
         echo "github"
-    else
-        # Fallback: check which CLI is available
-        if command -v glab &>/dev/null && ! command -v gh &>/dev/null; then
+        return
+    fi
+
+    # Self-hosted on a custom domain: match the remote host against the hosts
+    # each CLI has authenticated to (offline lookup, no network call).
+    local host host_re glab_cfg gh_cfg
+    host=$(_remote_host)
+    if [[ -n "$host" ]]; then
+        host_re=$(echo "$host" | sed 's/\./\\./g')
+        glab_cfg="${GLAB_CONFIG_DIR:-$HOME/.config/glab-cli}/config.yml"
+        gh_cfg="${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml"
+        if grep -qE "^[[:space:]]+${host_re}:" "$glab_cfg" 2>/dev/null; then
             echo "gitlab"
-        elif command -v gh &>/dev/null && ! command -v glab &>/dev/null; then
+            return
+        elif grep -qE "^${host_re}:" "$gh_cfg" 2>/dev/null; then
             echo "github"
-        else
-            echo "unknown"
+            return
         fi
+    fi
+
+    # Fallback: check which CLI is available
+    if command -v glab &>/dev/null && ! command -v gh &>/dev/null; then
+        echo "gitlab"
+    elif command -v gh &>/dev/null && ! command -v glab &>/dev/null; then
+        echo "github"
+    else
+        echo "unknown"
     fi
 }
 
@@ -68,7 +99,16 @@ _get_issue_number_from_url() {
     local url="$1"
     # GitHub: https://github.com/owner/repo/issues/123
     # GitLab: https://gitlab.com/owner/repo/-/issues/123
-    echo "$url" | grep -oE '/issues/[0-9]+' | grep -oE '[0-9]+'
+    # GitLab (newer): https://host/owner/repo/-/work_items/123
+    echo "$url" | grep -oE '/(issues|work_items)/[0-9]+' | grep -oE '[0-9]+' | head -1
+}
+
+# Fetch a single issue as JSON via the GitLab API (uses the :fullpath
+# placeholder resolved from the current repo's remote). Robust against
+# description content that contains '---' or other markup.
+_gitlab_issue_json() {
+    local iid="$1"
+    glab api "projects/:fullpath/issues/$iid" 2>/dev/null
 }
 
 # Create issue
@@ -81,9 +121,9 @@ issue_create() {
     case "$platform" in
         gitlab)
             if [[ -n "$labels" ]]; then
-                glab issue create -t "$title" -d "$body" -l "$labels"
+                glab issue create -y -t "$title" -d "$body" -l "$labels"
             else
-                glab issue create -t "$title" -d "$body"
+                glab issue create -y -t "$title" -d "$body"
             fi
             ;;
         github)
@@ -107,7 +147,7 @@ issue_get_title() {
 
     case "$platform" in
         gitlab)
-            glab issue view "$issue_number" 2>/dev/null | grep -oP 'title:\s*\K.*' | head -1
+            _gitlab_issue_json "$issue_number" | jq -r '.title // empty'
             ;;
         github)
             gh issue view "$issue_number" --json title --jq .title 2>/dev/null
@@ -126,7 +166,7 @@ issue_get_body() {
 
     case "$platform" in
         gitlab)
-            glab issue view "$issue_number" 2>/dev/null | sed -n '/^---$/,/^---$/p' | sed '1d;$d'
+            _gitlab_issue_json "$issue_number" | jq -r '.description // empty'
             ;;
         github)
             gh issue view "$issue_number" --json body --jq .body 2>/dev/null
@@ -145,8 +185,10 @@ issue_get_comments() {
 
     case "$platform" in
         gitlab)
-            # Use API to get notes as JSON
-            glab api "/projects/:fullpath/issues/$issue_number/notes" 2>/dev/null
+            # Notes as JSON, oldest first, large page to cover long chains.
+            # Both GitHub comments and GitLab notes expose a `.body`, so the
+            # callers' `jq '.[].body'` works uniformly across platforms.
+            glab api "projects/:fullpath/issues/$issue_number/notes?per_page=100&sort=asc" 2>/dev/null
             ;;
         github)
             local repo
