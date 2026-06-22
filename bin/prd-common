@@ -123,12 +123,67 @@ _get_issue_number_from_url() {
     echo "$url" | grep -oE '/(issues|work_items)/[0-9]+' | grep -oE '[0-9]+' | head -1
 }
 
-# Fetch a single issue as JSON via the GitLab API (uses the :fullpath
-# placeholder resolved from the current repo's remote). Robust against
+# Derive the GitLab project path (group[/subgroup]/repo) from the origin
+# remote, handling ssh (git@host:group/repo.git) and https
+# (https://host/group/repo.git) forms. PRD_GITLAB_PROJECT overrides it when
+# set, for the rare remote layout the parser can't handle.
+_gitlab_project_path() {
+    if [[ -n "$PRD_GITLAB_PROJECT" ]]; then
+        echo "$PRD_GITLAB_PROJECT"
+        return
+    fi
+    local url
+    url=$(git remote get-url origin 2>/dev/null || echo "")
+    [[ -z "$url" ]] && return
+    echo "$url" \
+        | sed -E 's#^[a-zA-Z]+://##; s#^[^@]+@##; s#^[^/:]+(:[0-9]+)?[:/]+##; s#\.git/?$##; s#/+$##'
+}
+
+# Full project URL (https://host/group/repo) built from the remote host and
+# project path. Passed to `glab --repo` so glab targets the right host+project
+# explicitly, instead of relying on base-repo resolution (which breaks when
+# the remote host doesn't match glab's default/configured GITLAB_HOST).
+_gitlab_project_url() {
+    local host path
+    host=$(_remote_host)
+    path=$(_gitlab_project_path)
+    [[ -z "$host" || -z "$path" ]] && return
+    echo "https://$host/$path"
+}
+
+# URL-encoded project ref for GitLab API paths. Uses the derived/overridden
+# project path; falls back to the :fullpath placeholder when no remote is
+# available (preserving the original behaviour).
+_gitlab_project_ref() {
+    local path
+    path=$(_gitlab_project_path)
+    [[ -z "$path" ]] && { echo ":fullpath"; return; }
+    echo "${path//\//%2F}"
+}
+
+# --hostname flag for `glab api`, so requests reach the remote's host even
+# when it isn't glab's default configured host. Empty when host is unknown.
+_glab_api_host_flag() {
+    local host
+    host=$(_remote_host)
+    [[ -n "$host" ]] && echo "--hostname $host"
+}
+
+# --repo flag for `glab issue` subcommands, built from the project URL so
+# base-repo resolution never depends on the remote matching GITLAB_HOST.
+_glab_repo_flag() {
+    local url
+    url=$(_gitlab_project_url)
+    [[ -n "$url" ]] && echo "--repo $url"
+}
+
+# Fetch a single issue as JSON via the GitLab API. Targets the project and
+# host derived from the remote (URL-encoded path + --hostname), so it works
+# on self-hosted instances regardless of glab's default host. Robust against
 # description content that contains '---' or other markup.
 _gitlab_issue_json() {
     local iid="$1"
-    glab api "projects/:fullpath/issues/$iid" 2>/dev/null
+    glab api $(_glab_api_host_flag) "projects/$(_gitlab_project_ref)/issues/$iid" 2>/dev/null
 }
 
 # Create issue
@@ -140,10 +195,12 @@ issue_create() {
 
     case "$platform" in
         gitlab)
+            local repo_flag
+            repo_flag=$(_glab_repo_flag)
             if [[ -n "$labels" ]]; then
-                glab issue create -y -t "$title" -d "$body" -l "$labels"
+                glab issue create $repo_flag -y -t "$title" -d "$body" -l "$labels"
             else
-                glab issue create -y -t "$title" -d "$body"
+                glab issue create $repo_flag -y -t "$title" -d "$body"
             fi
             ;;
         github)
@@ -208,7 +265,7 @@ issue_get_comments() {
             # Notes as JSON, oldest first, large page to cover long chains.
             # Both GitHub comments and GitLab notes expose a `.body`, so the
             # callers' `jq '.[].body'` works uniformly across platforms.
-            glab api "projects/:fullpath/issues/$issue_number/notes?per_page=100&sort=asc" 2>/dev/null
+            glab api $(_glab_api_host_flag) "projects/$(_gitlab_project_ref)/issues/$issue_number/notes?per_page=100&sort=asc" 2>/dev/null
             ;;
         github)
             local repo
@@ -230,7 +287,7 @@ issue_update_body() {
 
     case "$platform" in
         gitlab)
-            glab issue update "$issue_number" -d "$body"
+            glab issue update "$issue_number" $(_glab_repo_flag) -d "$body"
             ;;
         github)
             gh issue edit "$issue_number" --body "$body"
@@ -250,7 +307,7 @@ issue_create_comment() {
 
     case "$platform" in
         gitlab)
-            glab issue note "$issue_number" -m "$comment_body"
+            glab issue note "$issue_number" $(_glab_repo_flag) -m "$comment_body"
             ;;
         github)
             gh issue comment "$issue_number" --body "$comment_body"
@@ -269,7 +326,7 @@ issue_exists() {
 
     case "$platform" in
         gitlab)
-            glab issue view "$issue_number" &>/dev/null
+            glab issue view "$issue_number" $(_glab_repo_flag) &>/dev/null
             ;;
         github)
             gh issue view "$issue_number" &>/dev/null
