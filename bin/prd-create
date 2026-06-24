@@ -1,9 +1,19 @@
 #!/bin/bash
 #
-# Criar PRD local e issue no GitHub/GitLab (Cenário 1)
-# Uso: ./bin/prd-create <prd-id> "<title>" [labels]
+# Adotar uma issue existente para o versionamento de PRD (Cenário 1).
 #
-# Exemplo: ./bin/prd-create "hpos-compatibilidade" "Compatibilização com HPOS" "feature"
+# A issue normalmente já foi criada pelo /to-prd (com a estrutura correta).
+# Este comando NÃO cria a issue: ele carimba as metatags de versionamento
+# (PRD-ID, PRD-VERSION 1.0, ISSUE-NUMBER) e o cabeçalho de status na
+# DESCRIÇÃO AO VIVO, estabelecendo a baseline v1.0. A partir daí, prd-update
+# registra cada transição como diff e prd-restore consegue caminhar a cadeia.
+#
+# Idempotente: se a descrição já tiver PRD-ID, não faz nada.
+# Não deixa nenhum arquivo local — a issue é a fonte da verdade.
+#
+# Uso: ./bin/prd-create <issue-number> [prd-id]
+# Exemplo: ./bin/prd-create 390
+#          ./bin/prd-create 390 hpos-compatibilidade
 
 set -e
 
@@ -12,174 +22,95 @@ _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_script_dir/prd-common"
 
 _show_help() {
-    echo "Criar PRD local e issue no GitHub/GitLab"
+    echo "Adotar issue existente para versionamento de PRD (carimba metatags v1.0)"
     echo ""
-    echo "Uso: $0 <prd-id> \"<title>\" [labels]"
+    echo "Uso: $0 <issue-number> [prd-id]"
     echo ""
     echo "Argumentos:"
-    echo "  prd-id   Identificador único do PRD (ex: hpos-compatibilidade)"
-    echo "  title    Título da issue"
-    echo "  labels   Labels separadas por vírgula (opcional)"
+    echo "  issue-number  Número da issue (criada pelo /to-prd ou manualmente)"
+    echo "  prd-id        Identificador do PRD (opcional; derivado do título)"
     echo ""
-    echo "Exemplos:"
-    echo "  $0 hpos-compat \"Compatibilidade HPOS\" feature"
-    echo "  $0 pix-auto \"PIX Automático\" \"feature,high-priority\""
+    echo "Carimba PRD-ID/PRD-VERSION/ISSUE-NUMBER + cabeçalho de status na"
+    echo "descrição ao vivo. Idempotente. Não cria arquivos locais."
     echo ""
-    echo "Nota: Cria PRD com metatag de identificação"
-    echo "      Detecta automaticamente GitHub ou GitLab"
+    echo "Nota: Detecta automaticamente GitHub ou GitLab"
     echo "      Override: PRD_PLATFORM=github|gitlab $0 ..."
     exit 0
 }
 
 # Parse arguments
-if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
+if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
     _show_help
 fi
 
-_prd_id="$1"
-_title="$2"
-_labels="${3:-}"
+_issue_number="$1"
+_prd_id="${2:-}"
 
-# Validate
-if [[ -z "$_prd_id" ]]; then
-    echo "❌ PRD-ID é obrigatório"
+if [[ -z "$_issue_number" ]]; then
+    echo "❌ Número da issue é obrigatório"
     exit 1
 fi
 
-if [[ -z "$_title" ]]; then
-    echo "❌ Título é obrigatório"
-    exit 1
-fi
-
-# Check if PRD already exists
-_prd_file="prd/$_prd_id.md"
-if [[ -f "$_prd_file" ]]; then
-    echo "⚠️  PRD já existe: $_prd_file"
-    echo "Use './bin/prd-update $_prd_file' para atualizar"
-    exit 0
-fi
-
-# Create prd directory if not exists
-mkdir -p prd
-
-# Generate timestamp
-_timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-
-# Create initial PRD with metatags
-echo "📄 Criando PRD inicial com metatags..."
-cat > "$_prd_file" << EOF
-<!--
-PRD-ID: $_prd_id
-PRD-VERSION: 1.0
-PRD-UPDATED: $_timestamp
--->
-
-# PRD: $_title
-
-**Versão**: 1.0
-**Criado**: $(date +"%d/%m/%Y %H:%M")
-**Status**: 🟡 Em Revisão
-
----
-
-## 1. Resumo Executivo
-
-### Declaração do Problema
-[Descrever o problema que esta feature resolve]
-
-### Solução Proposta
-[Descrever a solução proposta]
-
-### Critérios de Sucesso
-- [ ] Critério 1
-- [ ] Critério 2
-- [ ] Critério 3
-
-## 2. Experiência do Usuário e Funcionalidade
-
-### Personas de Usuário
-- **Persona 1**: [Descrição]
-- **Persona 2**: [Descrição]
-
-### User Stories
-**Como** [usuário],
-**Eu quero** [ação],
-**Para que** [benefício].
-
-### Critérios de Aceite
-- [ ] Critério de aceite 1
-- [ ] Critério de aceite 2
-
-## 3. Especificações Técnicas
-
-### Pontos de Integração
-[Detalhes técnicos da implementação]
-
-### Arquivos Requerendo Modificação
-1. **Arquivo 1**: [Motivo da mudança]
-2. **Arquivo 2**: [Motivo da mudança]
-
-## 4. Estratégia de Testes
-
-### Testes Automatizados
-- [ ] Teste 1
-- [ ] Teste 2
-
-### Testes Manuais
-- [ ] Caso de teste 1
-- [ ] Caso de teste 2
-
-## 5. Riscos e Roadmap
-
-### Fase 1: [Objetivo]
-- [ ] Tarefa 1
-- [ ] Tarefa 2
-
-### Fase 2: [Objetivo]
-- [ ] Tarefa 1
-- [ ] Tarefa 2
-
----
-EOF
-
-# Detect platform for output message
 _platform=$(_detect_platform)
 _platform_name="GitHub"
 [[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
 
-# Create issue with PRD in description
-echo "🎯 Criando issue no $_platform_name..."
-_issue_output=$(issue_create "$_title" "$(cat "$_prd_file")" "$_labels")
-
-# Extract issue URL and number
-_issue_url=$(_get_issue_url_from_output "$_issue_output")
-_issue_number=$(_get_issue_number_from_url "$_issue_url")
-
-if [[ -z "$_issue_number" ]]; then
-    echo "❌ Falha ao criar issue ou obter número da issue"
-    echo "Output: $_issue_output"
+# Fetch the live description (source of truth)
+echo "📥 Baixando descrição da issue #$_issue_number ($_platform_name)..."
+_desc=$(issue_get_body "$_issue_number" || echo "")
+if [[ -z "$_desc" ]]; then
+    echo "❌ Descrição da issue #$_issue_number vazia ou inacessível"
     exit 1
 fi
 
-# Add ISSUE-NUMBER to PRD metatags and update title
-echo "🏷️  Adicionando número da issue ao PRD..."
-sed -i "4 i\\ISSUE-NUMBER: $_issue_number" "$_prd_file"
-sed -i "s/# PRD: $_title/# PRD para Issue #$_issue_number: $_title/" "$_prd_file"
+# Already adopted? Idempotent no-op.
+if echo "$_desc" | grep -q 'PRD-ID:'; then
+    _existing=$(echo "$_desc" | grep -oP 'PRD-ID: \K\S+' | head -1)
+    echo "ℹ️  Issue já versionada (PRD-ID: $_existing). Nada a fazer."
+    echo "   Edite com: ./bin/prd-sync $_issue_number  →  ./bin/prd-update $_issue_number <arquivo>"
+    exit 0
+fi
 
-# Sync issue body with the finalized PRD (metatags + corrected title)
-echo "🔄 Sincronizando corpo da issue..."
-issue_update_body "$_issue_number" "$(cat "$_prd_file")" > /dev/null
+# Derive PRD-ID from title when not provided
+if [[ -z "$_prd_id" ]]; then
+    _issue_title=$(issue_get_title "$_issue_number")
+    _prd_id=$(echo "$_issue_title" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-30 | sed -E 's/-+$//')
+    [[ -z "$_prd_id" ]] && _prd_id=$(echo "$_issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-30 | sed -E 's/-+$//')
+    [[ -z "$_prd_id" ]] && _prd_id="prd-$_issue_number"
+fi
+
+_timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+_date_br=$(date +"%d/%m/%Y %H:%M")
+
+# Build the versioning scaffold and prepend it to the existing description
+_header=$(cat <<EOF
+<!--
+PRD-ID: $_prd_id
+PRD-VERSION: 1.0
+ISSUE-NUMBER: $_issue_number
+PRD-UPDATED: $_timestamp
+-->
+
+**Versão**: v1.0
+**Atualizado**: $_date_br
+**Status**: 🟡 Em Revisão
+
+EOF
+)
+
+_new_desc=$(printf '%s\n\n%s\n' "$_header" "$_desc")
+
+echo "🏷️  Carimbando metatags v1.0 na descrição da issue..."
+issue_update_body "$_issue_number" "$_new_desc" > /dev/null
 
 echo ""
-echo "✅ Issue criada com sucesso!"
-echo "🔗 Issue: #$_issue_number - $_issue_url"
-echo "📄 PRD local: $_prd_file"
+echo "✅ Issue adotada para versionamento!"
 echo "🏷️  PRD-ID: $_prd_id"
+echo "📊 Versão: v1.0 (baseline)"
+echo "🔗 Issue: #$_issue_number"
 echo "🔧 Plataforma: $_platform_name"
 echo ""
 echo "📋 Próximos passos:"
-echo "   1. Edite o PRD: vim $_prd_file"
-echo "   2. Ver mudanças: ./bin/prd-diff $_prd_file"
-echo "   3. Atualize a issue: ./bin/prd-update $_prd_file"
-echo ""
-echo "⚠️  Lembre-se: PRDs ficam apenas localmente, não são commitados no git"
+echo "   1. Ler o PRD atual:  ./bin/prd-sync $_issue_number"
+echo "   2. Editar o conteúdo no contexto e salvar em arquivo temporário"
+echo "   3. Publicar mudanças: ./bin/prd-update $_issue_number <arquivo>"

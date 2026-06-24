@@ -1,11 +1,16 @@
 #!/bin/bash
 #
-# Sincronizar PRD mais recente da issue para arquivo local (Cenário 2)
-# Uso: ./bin/prd-sync <issue-number>
+# Imprimir o PRD mais recente da issue no stdout (Cenário 2).
 #
 # O PRD mais recente vive SEMPRE na descrição da issue (fonte da verdade).
 # Os comentários contêm apenas diffs de versão; nunca reconstruímos o PRD
 # a partir deles. Para recuperar uma versão antiga, use ./bin/prd-restore.
+#
+# Não persiste nenhum arquivo: o conteúdo vai para o stdout e a cópia de
+# trabalho fica no contexto do agente. Para editar, capture esta saída,
+# altere, salve num arquivo temporário e publique com ./bin/prd-update.
+#
+# Uso: ./bin/prd-sync <issue-number>
 
 set -e
 
@@ -14,7 +19,7 @@ _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_script_dir/prd-common"
 
 _show_help() {
-    echo "Sincronizar PRD mais recente da issue para arquivo local"
+    echo "Imprimir o PRD mais recente da issue no stdout"
     echo "Uso: $0 <issue-number>"
     echo ""
     echo "Argumentos:"
@@ -24,7 +29,7 @@ _show_help() {
     echo "Os comentários contêm apenas diffs (ver ./bin/prd-restore)."
     echo ""
     echo "Nota: Detecta automaticamente GitHub ou GitLab"
-    echo "      Cria arquivo prd/hpos-README-prd-<issue>.md"
+    echo "      Não cria arquivos — imprime a descrição no stdout"
     exit 0
 }
 
@@ -35,103 +40,28 @@ fi
 
 _issue_number="$1"
 
-# Validate
 if [[ -z "$_issue_number" ]]; then
-    echo "❌ Número da issue é obrigatório"
+    echo "❌ Número da issue é obrigatório" >&2
     exit 1
 fi
 
+# Diagnostics go to stderr so stdout carries ONLY the PRD content.
 _platform=$(_detect_platform)
 _platform_name="GitHub"
 [[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
 
-# Get issue details
-echo "📝 Buscando detalhes da issue #$_issue_number ($_platform_name)..."
-_issue_title=$(issue_get_title "$_issue_number")
-
-if [[ -z "$_issue_title" ]]; then
-    echo "❌ Issue #$_issue_number não encontrada"
-    exit 1
-fi
-
-# The issue DESCRIPTION is always the latest full PRD (source of truth).
-# Comments hold only version diffs, so we never reconstruct the PRD from them.
-echo "📄 Lendo PRD da descrição da issue (estado mais recente)..."
+echo "📝 Buscando PRD da issue #$_issue_number ($_platform_name)..." >&2
 _prd_content=$(issue_get_body "$_issue_number")
 
 if [[ -z "$_prd_content" ]]; then
-    echo "❌ Descrição da issue vazia — nada para sincronizar"
+    echo "❌ Descrição da issue vazia — nada para sincronizar" >&2
     exit 1
 fi
 
-# Extract PRD-ID from content
-_prd_id=$(echo "$_prd_content" | grep -oP 'PRD-ID: \K\S+' | head -1 || echo "")
-
-# If still no PRD-ID, generate one based on issue title
-if [[ -z "$_prd_id" ]]; then
-    # Create slug from issue title
-    _prd_id=$(echo "$_issue_title" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-30 | sed -E 's/-+$//')
-    [[ -z "$_prd_id" ]] && _prd_id=$(echo "$_issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-30 | sed -E 's/-+$//')
+if ! echo "$_prd_content" | grep -q 'PRD-ID:'; then
+    echo "⚠️  Issue ainda não versionada (sem metatags)." >&2
+    echo "    Rode './bin/prd-create $_issue_number' para adotá-la antes de versionar." >&2
 fi
 
-# Create local filename based on PRD-ID and issue number
-_prd_file="prd/${_prd_id}-issue-$_issue_number.md"
-
-# Check if PRD already exists locally
-if [[ -f "$_prd_file" ]]; then
-    echo "⚠️  PRD já existe localmente: $_prd_file"
-    read -p "Deseja sobrescrever? (s/N): " _confirm
-    if [[ "$_confirm" != "s" && "$_confirm" != "S" ]]; then
-        echo "❌ Operação cancelada"
-        exit 0
-    fi
-fi
-
-# Create prd directory if not exists
-mkdir -p prd
-
-# Save PRD to local file
-echo "💾 Salvando PRD localmente..."
-echo "$_prd_content" > "$_prd_file"
-
-# If PRD doesn't have metatags yet (legacy/pre-existing issue), adopt it:
-# prepend the metatag block AND the human-readable status header, so the
-# description carries version/status and prd-approve has a line to update.
-# The header is contiguous with the metatags (top of the file) so prd-update's
-# baseline alignment keeps it out of the first diff.
-if ! grep -q "PRD-ID:" "$_prd_file"; then
-    echo "🏷️  Adicionando metatags e cabeçalho de status ao PRD..."
-    _timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-    _date_br=$(date +"%d/%m/%Y %H:%M")
-    _version=$(grep -oP 'Versão.*v\K[0-9]+\.[0-9]+' "$_prd_file" || echo "1.0")
-
-    _header=$(cat <<EOF
-<!--
-PRD-ID: $_prd_id
-PRD-VERSION: $_version
-ISSUE-NUMBER: $_issue_number
-PRD-UPDATED: $_timestamp
--->
-
-**Versão**: v$_version
-**Atualizado**: $_date_br
-**Status**: 🟡 Em Revisão
-
-EOF
-)
-    printf '%s\n\n%s\n' "$_header" "$(cat "$_prd_file")" > "$_prd_file"
-fi
-
-echo ""
-echo "✅ PRD sincronizado com sucesso!"
-echo "📄 Arquivo: $_prd_file"
-echo "🏷️  PRD-ID: $_prd_id"
-echo "🔗 Issue: #$_issue_number"
-echo "🔧 Plataforma: $_platform_name"
-echo ""
-echo "📋 Próximos passos:"
-echo "   1. Edite o PRD: vim $_prd_file"
-echo "   2. Ver mudanças: ./bin/prd-diff $_prd_file"
-echo "   3. Atualize a issue: ./bin/prd-update $_prd_file"
-echo ""
-echo "⚠️  Lembre-se: PRDs ficam apenas localmente, não são commitados no git"
+# The PRD content (latest full document) — the only thing on stdout.
+printf '%s\n' "$_prd_content"

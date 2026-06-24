@@ -19,26 +19,6 @@ _normalize_volatile() {
         -e 's/^(\*\*Status\*\*).*/\1: NORMALIZED/'
 }
 
-# Print the contiguous "scaffold" at the top of a PRD (stdin -> stdout): the
-# metatag comment block plus the human-readable header lines (**Versão**/
-# **Atualizado**/**Criado**/**Status**) and the blank lines among them. Stops
-# at the first line of substantive content.
-#
-# Used to align a metatag-less (legacy/pre-existing) issue description with the
-# local file before diffing. Without this, adopting a legacy issue emits the
-# whole scaffold as spurious "+added" lines in the first diff — which leaked
-# as "PRD-VERSION: NORMALIZED" / "PRD-UPDATED: NORMALIZED" into the published
-# comment.
-_leading_scaffold() {
-    awk '
-        NR==1 && $0 ~ /^<!--/ { inblock=1; print; next }
-        inblock { print; if ($0 ~ /-->/) inblock=0; next }
-        /^[[:space:]]*$/ { print; next }
-        /^\*\*(Versão|Versao|Atualizado|Criado|Status)\*\*/ { print; next }
-        { exit }
-    '
-}
-
 # Extract the unified diff inside the first ```diff fenced block of a comment
 # body (stdin -> stdout). Used by prd-restore to recover the patch text.
 _extract_diff_block() {
@@ -47,6 +27,46 @@ _extract_diff_block() {
         /^```[[:space:]]*$/     { if (inblock) { inblock=0 } ; next }
         inblock { print }
     '
+}
+
+# Slug identifying the current repository, used to namespace the ephemeral
+# scratch directory so different projects never collide. Basename of the git
+# toplevel; falls back to the remote project path, then to "default".
+_repo_slug() {
+    local top slug
+    top=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [[ -n "$top" ]]; then
+        echo "$(basename "$top")"
+        return
+    fi
+    slug=$(_gitlab_project_path 2>/dev/null | sed -E 's#.*/##')
+    [[ -n "$slug" ]] && { echo "$slug"; return; }
+    echo "default"
+}
+
+# Ephemeral scratch base for this repo: ${TMPDIR:-/tmp}/prd-versioning/<repo>.
+# Nothing here is meant to persist between commands — the issue and its
+# comments are the only source of truth. Created on demand.
+_prd_tmp_base() {
+    local base="${TMPDIR:-/tmp}/prd-versioning/$(_repo_slug)"
+    mkdir -p "$base" 2>/dev/null
+    echo "$base"
+}
+
+# Delete an input file, but ONLY when it lives under the scratch base. Guards
+# against removing an arbitrary path the caller pointed at outside /tmp.
+_prd_cleanup_input() {
+    local file="$1"
+    [[ -z "$file" || ! -f "$file" ]] && return
+    local base="${TMPDIR:-/tmp}/prd-versioning/"
+    local resolved
+    resolved=$(cd "$(dirname "$file")" 2>/dev/null && pwd)/$(basename "$file")
+    if [[ "$resolved" == "$base"* ]]; then
+        rm -f "$file"
+        echo "🧹 Arquivo temporário removido: $file"
+    else
+        echo "ℹ️  Arquivo mantido (fora da base temporária): $file"
+    fi
 }
 
 # Extract the host (e.g. greatcode.aztecweb.net) from the origin remote URL,
