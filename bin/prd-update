@@ -7,13 +7,16 @@
 #   - Descrição da issue  = sempre o documento completo mais recente
 #   - Comentário          = diff puro (patch aplicável) de uma transição
 #
-# O 'antes' do diff é a descrição AO VIVO da issue (estado publicado real),
-# não um backup local. Linhas voláteis (versão/data/status) são normalizadas
-# antes de diffar para não poluírem o patch nem quebrarem o prd-restore.
+# O 'antes' do diff é a descrição AO VIVO da issue (estado publicado real).
+# Linhas voláteis (versão/data/status) são normalizadas antes de diffar para
+# não poluírem o patch nem quebrarem o prd-restore.
+#
+# O conteúdo novo chega via <prd-file> (escrito pelo agente). No sucesso, o
+# arquivo é APAGADO se estiver dentro da base temporária — nada persiste.
 #
 # Uso:
-#   ./bin/prd-update <prd-file>              # versão auto-incrementada
-#   ./bin/prd-update <prd-file> [version]    # versão específica
+#   ./bin/prd-update <issue-number> <prd-file>            # versão auto-incrementada
+#   ./bin/prd-update <issue-number> <prd-file> [version]  # versão específica
 
 set -e
 
@@ -25,18 +28,19 @@ _show_help() {
     echo "Atualizar PRD: descrição = completo, comentário = diff puro"
     echo ""
     echo "Uso:"
-    echo "  $0 <prd-file> [version]"
+    echo "  $0 <issue-number> <prd-file> [version]"
     echo ""
     echo "Argumentos:"
-    echo "  prd-file  Caminho do arquivo PRD"
-    echo "  version   Nova versão (opcional, auto-incrementada se não fornecida)"
+    echo "  issue-number  Número da issue (GitHub ou GitLab)"
+    echo "  prd-file      Arquivo com o conteúdo completo editado do PRD"
+    echo "  version       Nova versão (opcional, auto-incrementada se omitida)"
     echo ""
     echo "Exemplos:"
-    echo "  $0 prd/hpos-compatibilidade.md"
-    echo "  $0 prd/hpos-README-prd-390.md v2.0"
+    echo "  $0 390 /tmp/prd-versioning/repo/hpos.md"
+    echo "  $0 390 /tmp/prd-versioning/repo/hpos.md v2.0"
     echo ""
     echo "Nota: Detecta automaticamente GitHub ou GitLab"
-    echo "      Sobrescreve a descrição com o completo; comenta só o diff"
+    echo "      Sobrescreve a descrição; comenta só o diff; apaga o arquivo"
     exit 0
 }
 
@@ -51,40 +55,23 @@ _increment_version() {
 }
 
 # Parse arguments
-if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
     _show_help
 fi
 
-_prd_file="$1"
-_version="${2#v}"
+_issue_number="$1"
+_prd_file="$2"
+_version="${3#v}"
 
 # Validate
-if [[ ! -f "$_prd_file" ]]; then
-    echo "❌ PRD não encontrado: $_prd_file"
+if [[ -z "$_issue_number" ]]; then
+    echo "❌ Número da issue é obrigatório"
     exit 1
 fi
 
-# Extract issue number from metatag first (priority)
-_issue_number=$(grep -oP 'ISSUE-NUMBER: \K[0-9]+' "$_prd_file" || echo "")
-
-# If not in metatags, try content
-if [[ -z "$_issue_number" ]]; then
-    _issue_number=$(grep -oP 'Issue #[0-9]+' "$_prd_file" | grep -oP '[0-9]+' || echo "")
-fi
-
-# If not in content, try filename (hpos-README-prd-390.md -> 390)
-if [[ -z "$_issue_number" ]]; then
-    _issue_number=$(basename "$_prd_file" | grep -oP 'prd-\K[0-9]+' || echo "")
-fi
-
-# If still not found, ask user
-if [[ -z "$_issue_number" ]]; then
-    echo "⚠️  Não foi possível encontrar número da issue automaticamente"
-    read -p "Digite o número da issue: " _issue_number
-fi
-
-if [[ -z "$_issue_number" ]]; then
-    echo "❌ Número da issue é obrigatório"
+if [[ ! -f "$_prd_file" ]]; then
+    echo "❌ PRD não encontrado: $_prd_file"
+    echo "   Salve o conteúdo editado num arquivo e tente de novo."
     exit 1
 fi
 
@@ -102,6 +89,12 @@ if [[ -z "$_desc" ]]; then
     exit 1
 fi
 
+if ! echo "$_desc" | grep -q 'PRD-ID:'; then
+    echo "❌ A descrição não tem metatags de versionamento."
+    echo "   Adote a issue primeiro: ./bin/prd-create $_issue_number"
+    exit 1
+fi
+
 # FROM version = version published in the description (authoritative baseline)
 _from_version=$(echo "$_desc" | grep -oP 'PRD-VERSION: \K[0-9.]+' | head -1 || echo "")
 if [[ -z "$_from_version" ]]; then
@@ -114,21 +107,11 @@ if [[ -z "$_version" ]]; then
 fi
 
 # Build normalized temp files for diffing (volatile lines neutralized).
-#
-# Legacy adoption: if the live description has no metatag block, its scaffold
-# (metatags + header) differs from the local file only by being absent. Prepend
-# the local file's leading scaffold to the baseline so the scaffold is symmetric
-# and never shows up as spurious "+added" lines in the diff.
 _tmp_dir=$(mktemp -d)
 trap 'rm -rf "$_tmp_dir"' EXIT
 _before="$_tmp_dir/before"
 _after="$_tmp_dir/after"
-if echo "$_desc" | grep -q 'PRD-ID:'; then
-    echo "$_desc" | _normalize_volatile > "$_before"
-else
-    echo "🩹 Descrição sem metatags (issue legada) — alinhando baseline..."
-    { _leading_scaffold < "$_prd_file"; echo "$_desc"; } | _normalize_volatile > "$_before"
-fi
+echo "$_desc" | _normalize_volatile > "$_before"
 _normalize_volatile < "$_prd_file" > "$_after"
 
 # Generate an applicable unified diff (clean header labels for readability;
@@ -142,13 +125,13 @@ _diff=$(echo "$_diff" \
 if [[ -z "$_diff" ]]; then
     echo "ℹ️  Nenhuma mudança de conteúdo detectada (apenas linhas voláteis)."
     echo "    Nada a publicar — abortando para manter a cadeia limpa."
+    echo "    O arquivo foi mantido: $_prd_file"
     exit 0
 fi
 
 echo "   Linhas de diff: $(echo "$_diff" | wc -l)"
 
-# Stamp metatags + volatile body lines only after confirming a real change,
-# so an aborted no-op update never leaves the local file ahead of the issue.
+# Stamp metatags + volatile body lines only after confirming a real change.
 _timestamp=$(date +"%Y-%m-%d %H:%M:%S")
 echo "📝 Atualizando metatags para v$_version..."
 sed -i "s/PRD-VERSION: .*/PRD-VERSION: $_version/" "$_prd_file"
@@ -185,12 +168,15 @@ issue_create_comment "$_issue_number" "$_comment_body"
 echo "📄 Sobrescrevendo descrição com o documento completo (v$_version)..."
 issue_update_body "$_issue_number" "$(cat "$_prd_file")" > /dev/null
 
+# Nothing persists: drop the input file (only if inside the scratch base).
+_prd_cleanup_input "$_prd_file"
+
 echo ""
 echo "✅ PRD atualizado com sucesso!"
-echo "📄 Arquivo: $_prd_file"
 echo "🏷️  PRD-ID: $_prd_id"
 echo "🔗 Issue: #$_issue_number"
 echo "📊 Versão: v$_from_version → v$_version"
 echo "🔧 Plataforma: $_platform_name"
 echo ""
 echo "💡 Recuperar versão anterior: ./bin/prd-restore $_issue_number v$_from_version"
+echo "💡 Continuar editando: ./bin/prd-sync $_issue_number"

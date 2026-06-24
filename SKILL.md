@@ -15,7 +15,9 @@ Manage versioned Product Requirements Documents (PRDs) in GitHub or GitLab issue
 - Each **comment** holds **only the diff** of one version transition (a machine-applicable patch), never the full document.
 - Versions are recoverable by walking the comment chain backwards from the description (`prd-restore`), reverse-applying patches.
 
-To keep that chain robust, **volatile lines** (`PRD-VERSION`, `PRD-UPDATED`, `**Versão**`, `**Atualizado**`, `**Status**`) are normalized out before diffing — they never appear in a patch, so editing the status (e.g. via `prd-approve`) never breaks recovery.
+**No local files persist.** The issue and its comments are the only source of truth. Commands never leave a file behind: `prd-sync`/`prd-restore` print to **stdout**, and `prd-create`/`prd-update` act on the live issue. When you edit a PRD, the working copy lives in **your context** — you write it to a throwaway file under `${TMPDIR:-/tmp}/prd-versioning/<repo>/` only to hand it to `prd-update`, which deletes it on success.
+
+To keep the diff chain robust, **volatile lines** (`PRD-VERSION`, `PRD-UPDATED`, `**Versão**`, `**Atualizado**`, `**Status**`) are normalized out before diffing — they never appear in a patch, so editing the status (e.g. via `prd-approve`) never breaks recovery.
 
 The skill automatically detects whether you're working in a GitHub or GitLab repository and uses the appropriate CLI (`gh` or `glab`).
 
@@ -23,67 +25,50 @@ The skill automatically detects whether you're working in a GitHub or GitLab rep
 
 ```dot
 digraph prd_workflow {
-    "Need to work with PRD?" [shape=diamond];
     "Issue exists?" [shape=diamond];
-    "Use prd-sync" [shape=box, style=filled, fillcolor=lightblue];
-    "Use prd-create" [shape=box, style=filled, fillcolor=lightgreen];
-    "Edit locally" [shape=box];
-    "Use prd-update" [shape=box, style=filled, fillcolor=lightyellow];
+    "Create issue via /to-prd" [shape=box, style=filled, fillcolor=lightgreen];
+    "Versioned? (has metatags)" [shape=diamond];
+    "prd-create (adopt)" [shape=box, style=filled, fillcolor=lightyellow];
+    "prd-sync -> edit -> prd-update" [shape=box, style=filled, fillcolor=lightblue];
 
-    "Need to work with PRD?" -> "Issue exists?" [label="yes"];
-    "Issue exists?" -> "Use prd-sync" [label="yes"];
-    "Issue exists?" -> "Use prd-create" [label="no"];
-    "Use prd-sync" -> "Edit locally";
-    "Use prd-create" -> "Edit locally";
-    "Edit locally" -> "Use prd-update";
+    "Issue exists?" -> "Create issue via /to-prd" [label="no"];
+    "Create issue via /to-prd" -> "prd-create (adopt)";
+    "Issue exists?" -> "Versioned? (has metatags)" [label="yes"];
+    "Versioned? (has metatags)" -> "prd-create (adopt)" [label="no"];
+    "Versioned? (has metatags)" -> "prd-sync -> edit -> prd-update" [label="yes"];
+    "prd-create (adopt)" -> "prd-sync -> edit -> prd-update";
 }
 ```
 
 **Use when:**
-- Creating a new PRD issue from scratch
-- Updating an existing PRD in a GitHub issue
-- Synchronizing a PRD from an existing issue to local editing
-- Need to track PRD versions and changes
+- Adopting a `/to-prd`-created issue into version tracking
+- Updating an existing PRD in a GitHub/GitLab issue
+- Reading the latest PRD from an issue to edit it
+- Recovering an old PRD version from the diff chain
 
 **NOT for:**
+- Creating the issue itself — use `/to-prd` (it writes the PRD with the correct structure and publishes the issue)
 - Simple issue descriptions without PRD structure
 - Documents that don't require version tracking
 
-## Core Pattern
+## Relationship with /to-prd
 
-### Before (Without Versioning)
-```markdown
-# PRD for Feature X
+`/to-prd` is what **creates the issue**: it synthesizes the PRD (Problem Statement, Solution, User Stories, Implementation Decisions, Testing Decisions, Out of Scope, Further Notes) and publishes it with the `ready-for-agent` label. It does **not** add versioning metatags.
 
-Basic requirements...
-[Edited directly in GitHub, no history]
-```
-
-### After (With Versioning)
-```markdown
-<!--
-PRD-ID: feature-x
-PRD-VERSION: 1.2
-PRD-UPDATED: 2026-04-15 14:30:00
--->
-
-# PRD: Feature X
-
-**Version**: 1.2
-**Updated**: 15/04/2026 14:30
-...
-```
+`prd-versioning` takes over from there: `prd-create <issue>` adopts that issue by stamping the versioning metatags (baseline v1.0) onto its description. From then on every change is tracked.
 
 ## Quick Reference
 
 | Task | Script | Usage |
 |------|--------|-------|
-| Create new PRD + issue | `prd-create` | `./bin/prd-create <prd-id> "<title>" [labels]` |
-| Sync latest PRD from issue description | `prd-sync` | `./bin/prd-sync <issue-number>` |
-| Publish update (overwrites description, comments the diff) | `prd-update` | `./bin/prd-update <prd-file>` |
-| Preview diff vs live description | `prd-diff` | `./bin/prd-diff <prd-file>` |
-| Recover an old version from the diff chain | `prd-restore` | `./bin/prd-restore <issue-number> <version>` |
-| Approve PRD version | `prd-approve` | `./bin/prd-approve <prd-file>` |
+| Adopt an existing issue (stamp metatags v1.0) | `prd-create` | `./bin/prd-create <issue-number> [prd-id]` |
+| Print the latest PRD from the description | `prd-sync` | `./bin/prd-sync <issue-number>` |
+| Preview diff of a candidate vs live description | `prd-diff` | `./bin/prd-diff <issue-number> <prd-file>` |
+| Publish update (comment diff, overwrite description, delete file) | `prd-update` | `./bin/prd-update <issue-number> <prd-file> [version]` |
+| Recover an old version (printed to stdout) | `prd-restore` | `./bin/prd-restore <issue-number> <version>` |
+| Approve PRD version | `prd-approve` | `./bin/prd-approve <issue-number> [version]` |
+
+Every command takes the **issue number**. Editable content flows through stdout (read) and a throwaway file (write); nothing is kept on disk.
 
 ## Platform Detection
 
@@ -108,14 +93,14 @@ The skill derives the GitLab **host and project path directly from the `origin` 
 
 ### Metatag Format
 
-Every PRD (description + local file) must include at the top:
+Every PRD description carries at the top (added by `prd-create`):
 
 ```markdown
 <!--
 PRD-ID: {unique-identifier}
 PRD-VERSION: {major.minor}
-PRD-UPDATED: {YYYY-MM-DD HH:MM:SS}
 ISSUE-NUMBER: {issue_number}
+PRD-UPDATED: {YYYY-MM-DD HH:MM:SS}
 -->
 ```
 
@@ -136,46 +121,38 @@ PRD-DIFF-TO: {new version}
 ```
 ```
 
-### Scenario 1: New Issue (No PRD exists)
+### Scenario 1: New PRD
 
 ```bash
-# Step 1: Use /prd skill to generate PRD content
-/prd
+# Step 1: Create the issue with /to-prd (writes the PRD + publishes it)
+/to-prd
 
-# The skill will interview you about:
-# - The core problem you're solving
-# - Success metrics
-# - Constraints (budget, tech stack, deadlines)
-# - User personas and stories
-# - Technical specifications
-
-# Step 2: Create PRD and issue together (auto-detects GitHub or GitLab)
-./bin/prd-create "hpos-compat" "Compatibilidade HPOS" "feature"
-
-# Step 3: Replace generated template with /prd output
-# Edit prd/hpos-compat.md and paste the /prd content
-
-# Output: Creates prd/hpos-compat.md and issue
+# Step 2: Adopt the issue into version tracking (stamps metatags v1.0)
+./bin/prd-create 390
+# Optional explicit PRD-ID: ./bin/prd-create 390 hpos-compatibilidade
 ```
 
-### Scenario 2: Existing Issue (PRD already exists)
+### Scenario 2: Editing an existing versioned PRD
 
 ```bash
-# Sync PRD from issue to local file (auto-detects GitHub or GitLab)
+# Read the latest PRD (printed to stdout — capture it into your context)
 ./bin/prd-sync 390
 
-# Output: Creates prd/hpos-README-prd-390.md
+# Edit the content in context, then write it to a throwaway file
+#   (anywhere under ${TMPDIR:-/tmp}/prd-versioning/<repo>/ so it gets cleaned)
 
-# Edit locally
-vim prd/hpos-README-prd-390.md
+# Preview what would be published
+./bin/prd-diff 390 /tmp/prd-versioning/<repo>/hpos.md
 
-# Update issue with new version
-./bin/prd-update prd/hpos-README-prd-390.md
+# Publish: comments the diff, overwrites the description, deletes the file
+./bin/prd-update 390 /tmp/prd-versioning/<repo>/hpos.md
 ```
 
 ### Script Behavior
 
-**prd-sync** reads the issue **description** (the latest full PRD) into a local file. It never reads comments — they only hold diffs.
+**prd-create** adopts an existing issue: it fetches the live description, prepends the metatag block plus the `**Versão**/**Atualizado**/**Status**` header (baseline v1.0), and writes it back to the description. Idempotent — if the description already has `PRD-ID`, it does nothing. Leaves no local file.
+
+**prd-sync** prints the issue **description** (the latest full PRD) to **stdout**. It never reads comments — they only hold diffs. Diagnostics go to stderr so stdout carries only the PRD.
 
 **prd-update** publishes a new version:
 1. Fetches the **live issue description** as the diff baseline (`PRD-DIFF-FROM`).
@@ -183,28 +160,27 @@ vim prd/hpos-README-prd-390.md
 3. Normalizes volatile lines on both sides, generates a machine-applicable unified diff.
 4. Posts a **comment containing only that diff** (plus hidden chain metatags).
 5. **Overwrites the issue description** with the full latest document.
-6. Aborts without posting if there is no substantive content change.
+6. Aborts without posting (and keeps the file) if there is no substantive content change.
+7. On success, **deletes the input file** — but only if it lives under `${TMPDIR:-/tmp}/prd-versioning/`; a path outside that base is left untouched.
+
+**prd-diff** previews the exact diff `prd-update` would publish (candidate file vs live description, volatile lines normalized). Read-only: never publishes, never deletes the file.
 
 **prd-restore** recovers an old version:
 - Walks the comment chain backwards from the description, reverse-applying patches (`patch -R`) until it reaches the target version.
 - **Strict validation**: aborts and names the broken link if a patch is missing or fails to apply. Never produces a silently-corrupt document.
-- Writes a local file for review (`prd/<id>-issue-<n>-v<version>.md`); does **not** touch the issue. Re-publish with `prd-update` if desired.
+- Prints the recovered version to **stdout** for review; does **not** touch the issue or write a file. To re-publish, save the output to a file and run `prd-update`.
 
-**prd-approve** edits the `**Status**` line on the live description (🟢 Aprovado) and posts an approval comment. Status is volatile (normalized out of the chain), so this never breaks `prd-restore`.
-
-**Adopting a pre-existing issue** (description has no PRD metatags): `prd-sync` prepends the metatag block **and** a `**Versão**/**Atualizado**/**Status**` header, so the description carries status from then on and `prd-approve` has a line to flip. On the first `prd-update`, the live (metatag-less) description is aligned against the local file's scaffold before diffing, so the metatag/header block never leaks into the diff comment as `+`-added `NORMALIZED` lines — the first comment shows only real content changes.
-
-**Legacy issues** (old model, with full PRDs in comments): clean break. The new model applies from the next `prd-update` onward; `prd-restore` only reaches versions created by the new flow.
+**prd-approve** reads the **live description** (version, PRD-ID, status), edits the `**Status**` line (🟢 Aprovado) and posts an approval comment. No local file. Status is volatile (normalized out of the chain), so this never breaks `prd-restore`.
 
 ## Common Mistakes
 
 | Mistake | Problem | Fix |
 |---------|---------|-----|
-| Editing the description by hand | No diff recorded; breaks the restore chain baseline silently | Always `prd-sync` → edit locally → `prd-update` |
+| Editing the description by hand | No diff recorded; breaks the restore chain baseline silently | Always `prd-sync` → edit → `prd-update` |
 | Putting full document in a comment | Defeats the model; comments are diffs only | Let `prd-update` post the diff; full doc lives in the description |
 | Editing/deleting old diff comments | Breaks the chain; `prd-restore` will abort at that link | Treat diff comments as immutable history |
-| Missing metatags | Cannot identify PRD or walk the chain | Keep PRD-ID, PRD-VERSION, ISSUE-NUMBER intact |
-| Not incrementing version | Cannot track evolution | Use `prd-update` which auto-increments |
+| Running `prd-update` before adopting | Description has no metatags; update refuses | Adopt first with `prd-create <issue>` |
+| Keeping PRD copies on disk | They go stale vs the issue (the source of truth) | Re-read with `prd-sync` whenever you need the current state |
 
 ## Rationalization Trap
 
@@ -213,34 +189,26 @@ vim prd/hpos-README-prd-390.md
 | "Just editing the issue is faster" | Loses all history and makes tracking impossible |
 | "The content speaks for itself" | Without PRD-ID, cannot identify which PRD this is |
 | "Version numbers are overkill" | No way to know if looking at current or old PRD |
-| "I'll remember to track changes" | Memory fails; metatags provide definitive record |
+| "I'll keep a local copy to be safe" | The issue is the source of truth; a local copy only drifts |
 
 **Violating the letter of these rules is violating the spirit of PRD versioning.**
-
-## File Structure
-
-```
-prd/
-├── {prd-id}.md                       # Custom ID PRDs (Scenario 1)
-├── {prd-id}-issue-{n}.md             # Synced PRDs (Scenario 2)
-└── {prd-id}-issue-{n}-v{version}.md  # Recovered versions (prd-restore)
-```
 
 ## Workflow Summary
 
 ```bash
 # New PRD
-/prd                                    # Generate PRD content with discovery
-./bin/prd-create <id> "<title>"        # Create PRD file + issue (full PRD in description)
-vim prd/<id>.md                         # Replace with /prd output
-./bin/prd-update prd/<id>.md           # Overwrite description, comment the diff
+/to-prd                                 # Create the issue (PRD + publish)
+./bin/prd-create <issue>                # Adopt: stamp versioning metatags (v1.0)
 
-# Existing PRD
-./bin/prd-sync <issue>                  # Pull latest full PRD from description
-vim prd/<file>.md
-./bin/prd-diff prd/<file>.md            # Preview diff vs live description
-./bin/prd-update prd/<file>.md          # Publish
+# Edit an existing PRD
+./bin/prd-sync <issue>                  # Print latest full PRD (capture into context)
+#   edit in context -> write to a temp file under /tmp/prd-versioning/<repo>/
+./bin/prd-diff <issue> <prd-file>       # Preview diff vs live description
+./bin/prd-update <issue> <prd-file>     # Publish; deletes the temp file
+
+# Approve
+./bin/prd-approve <issue>               # Flip status, post approval (reads live)
 
 # Recover an old version
-./bin/prd-restore <issue> v1.2          # Reverse-applies the diff chain → local file
+./bin/prd-restore <issue> v1.2          # Reverse-applies the diff chain -> stdout
 ```

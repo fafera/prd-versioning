@@ -11,6 +11,9 @@
 # Validação ESTRITA: se faltar um elo ou um patch -R falhar, aborta apontando
 # o elo quebrado em vez de gerar um documento corrompido.
 #
+# A versão recuperada vai para o STDOUT (nada é persistido). Para re-publicar,
+# capture a saída, salve num arquivo e rode ./bin/prd-update.
+#
 # Uso: ./bin/prd-restore <issue-number> <version>
 # Exemplo: ./bin/prd-restore 390 v1.2
 
@@ -28,8 +31,8 @@ _show_help() {
     echo "  issue-number  Número da issue (GitHub ou GitLab)"
     echo "  version       Versão a recuperar (ex: v1.2 ou 1.2)"
     echo ""
-    echo "Gera um arquivo local prd/<id>-issue-<n>-v<version>.md para revisão."
-    echo "NÃO altera a issue — você decide se re-publica com prd-update."
+    echo "Imprime a versão recuperada no stdout para revisão."
+    echo "NÃO altera a issue e NÃO grava arquivos. Re-publicar = prd-update."
     exit 0
 }
 
@@ -40,15 +43,16 @@ fi
 _issue_number="$1"
 _target="${2#v}"
 
+# Diagnostics go to stderr so stdout carries ONLY the recovered document.
 _platform=$(_detect_platform)
 _platform_name="GitHub"
 [[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
 
 # Fetch live description (latest state)
-echo "📥 Baixando descrição da issue #$_issue_number ($_platform_name)..."
+echo "📥 Baixando descrição da issue #$_issue_number ($_platform_name)..." >&2
 _desc=$(issue_get_body "$_issue_number" || echo "")
 if [[ -z "$_desc" ]]; then
-    echo "❌ Não foi possível obter a descrição da issue #$_issue_number"
+    echo "❌ Não foi possível obter a descrição da issue #$_issue_number" >&2
     exit 1
 fi
 
@@ -56,21 +60,21 @@ _current=$(echo "$_desc" | grep -oP 'PRD-VERSION: \K[0-9.]+' | head -1 || echo "
 _prd_id=$(echo "$_desc" | grep -oP 'PRD-ID: \K\S+' | head -1 || echo "")
 
 if [[ -z "$_current" ]]; then
-    echo "❌ A descrição não tem metatag PRD-VERSION."
-    echo "   Esta issue não está no formato versionado novo (corte limpo)."
+    echo "❌ A descrição não tem metatag PRD-VERSION." >&2
+    echo "   Esta issue não está no formato versionado (rode ./bin/prd-create $_issue_number)." >&2
     exit 1
 fi
 
 if [[ "$_current" == "$_target" ]]; then
-    echo "ℹ️  A versão atual já é v$_target (descrição). Nada a reverter."
+    echo "ℹ️  A versão atual já é v$_target (descrição). Use ./bin/prd-sync $_issue_number." >&2
     exit 0
 fi
 
 # Fetch comments and index the diff chain (TO -> {FROM, patch})
-echo "🔍 Indexando cadeia de diffs nos comentários..."
+echo "🔍 Indexando cadeia de diffs nos comentários..." >&2
 _comments=$(issue_get_comments "$_issue_number" || echo "")
 if [[ -z "$_comments" ]] || ! command -v jq &>/dev/null; then
-    echo "❌ Não foi possível ler comentários (jq disponível?)."
+    echo "❌ Não foi possível ler comentários (jq disponível?)." >&2
     exit 1
 fi
 
@@ -93,8 +97,8 @@ done < <(echo "$_comments" | jq -r '.[].body | @base64')
 
 # Validate target exists in the chain
 if ! echo " $_known " | grep -q " $_target "; then
-    echo "❌ Versão v$_target não existe na cadeia desta issue."
-    echo "   Versões conhecidas: $(echo $_known | tr ' ' '\n' | grep -v '^$' | sort -Vu | tr '\n' ' ')"
+    echo "❌ Versão v$_target não existe na cadeia desta issue." >&2
+    echo "   Versões conhecidas: $(echo $_known | tr ' ' '\n' | grep -v '^$' | sort -Vu | tr '\n' ' ')" >&2
     exit 1
 fi
 
@@ -105,22 +109,22 @@ _working="$_tmp_dir/working"
 _patchfile="$_tmp_dir/patch"
 echo "$_desc" | _normalize_volatile > "$_working"
 
-echo "⏪ Revertendo cadeia: v$_current → v$_target"
+echo "⏪ Revertendo cadeia: v$_current → v$_target" >&2
 _cursor="$_current"
 while [[ "$_cursor" != "$_target" ]]; do
     _p="${_patch_of[$_cursor]:-}"
     if [[ -z "$_p" ]]; then
-        echo "❌ ABORTA: elo quebrado — nenhum patch chega em v$_cursor (TO: $_cursor)."
-        echo "   A cadeia está incompleta entre v$_target e v$_current."
+        echo "❌ ABORTA: elo quebrado — nenhum patch chega em v$_cursor (TO: $_cursor)." >&2
+        echo "   A cadeia está incompleta entre v$_target e v$_current." >&2
         exit 1
     fi
     printf '%s\n' "$_p" > "$_patchfile"
     if ! patch -R -f -s "$_working" < "$_patchfile" 2>/dev/null; then
-        echo "❌ ABORTA: patch -R falhou ao reverter o elo v${_from_of[$_cursor]} → v$_cursor."
-        echo "   A descrição ou um comentário foi editado fora do fluxo."
+        echo "❌ ABORTA: patch -R falhou ao reverter o elo v${_from_of[$_cursor]} → v$_cursor." >&2
+        echo "   A descrição ou um comentário foi editado fora do fluxo." >&2
         exit 1
     fi
-    echo "   ✓ revertido v$_cursor → v${_from_of[$_cursor]}"
+    echo "   ✓ revertido v$_cursor → v${_from_of[$_cursor]}" >&2
     _cursor="${_from_of[$_cursor]}"
 done
 
@@ -135,21 +139,8 @@ sed -i \
     -e "s|^\*\*Status\*\*: NORMALIZED|\*\*Status\*\*: 🟡 Em Revisão (restaurado de v$_target)|" \
     "$_working"
 
-# Write the recovered file locally
-[[ -z "$_prd_id" ]] && _prd_id="prd"
-mkdir -p prd
-_out="prd/${_prd_id}-issue-${_issue_number}-v${_target}.md"
-if [[ -f "$_out" ]]; then
-    read -p "⚠️  $_out já existe. Sobrescrever? (s/N): " _confirm
-    [[ "$_confirm" != "s" && "$_confirm" != "S" ]] && { echo "❌ Cancelado"; exit 0; }
-fi
-cp "$_working" "$_out"
+echo "✅ Versão v$_target recuperada (issue #$_issue_number). Conteúdo no stdout." >&2
+echo "💡 Para re-publicar: salve a saída num arquivo e rode ./bin/prd-update $_issue_number <arquivo>" >&2
 
-echo ""
-echo "✅ Versão v$_target recuperada!"
-echo "📄 Arquivo: $_out"
-echo "🔗 Issue: #$_issue_number"
-echo ""
-echo "📋 Próximos passos:"
-echo "   1. Revise: vim $_out"
-echo "   2. Para re-publicar como nova versão: ./bin/prd-update $_out"
+# The recovered document — the only thing on stdout.
+cat "$_working"
