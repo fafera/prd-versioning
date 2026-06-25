@@ -87,7 +87,11 @@ GitLab data is read through `glab api` (JSON), so descriptions are handled robus
 
 **Self-hosted GitLab**: authenticate once with `glab auth login --hostname <your-host>`. Detection then works automatically. If you skip auth or detection still fails, force it with `PRD_PLATFORM=gitlab`.
 
-The skill derives the GitLab **host and project path directly from the `origin` remote** and passes them explicitly to `glab` (`--hostname` for `glab api`, `--repo https://host/group/repo` for `glab issue`). This means it works even when the remote host doesn't match `glab`'s default configured host or `GITLAB_HOST` — no need to set `GITLAB_HOST` or run from a specific directory. If your remote layout can't be parsed automatically, override the project path with `PRD_GITLAB_PROJECT=group/repo` (or `group/subgroup/repo`).
+The skill derives the GitLab **host and project path directly from the `origin` remote** and passes them explicitly to `glab` (`--hostname` for `glab api`, `--repo https://host/group/repo` for `glab issue`). This means it works even when the remote host doesn't match `glab`'s default configured host or `GITLAB_HOST` — no need to set `GITLAB_HOST`. If your remote layout can't be parsed automatically, override the project path with `PRD_GITLAB_PROJECT=group/repo` (or `group/subgroup/repo`).
+
+**Which repository the skill targets**: the remote is read from the **target project's git repo**, resolved (in order) from `PRD_REPO_DIR`, then the git toplevel of the current directory. Run the commands from the project root, or set `PRD_REPO_DIR=/path/to/project` if you invoke them from elsewhere (e.g. while `cd`'d into the skill's own checkout). If the resolved remote contradicts the target platform (e.g. platform is `gitlab` but the remote is `github.com`), the skill aborts with an actionable message instead of querying the wrong host — set `PRD_REPO_DIR`/`PRD_PLATFORM` to correct it.
+
+**Self-hosted example** (host `git.animaeducacao.com.br`): from the project root, `PRD_PLATFORM=gitlab ./bin/prd-sync <issue>`; or from anywhere, `PRD_REPO_DIR=/path/to/project PRD_PLATFORM=gitlab /abs/path/bin/prd-sync <issue>`.
 
 ## Implementation
 

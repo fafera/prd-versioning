@@ -29,12 +29,22 @@ _extract_diff_block() {
     '
 }
 
+# Directory of the target repository for all git lookups. Explicit anchor so
+# the skill never reads the wrong repo's remote: PRD_REPO_DIR wins; otherwise
+# the git toplevel of the current directory; "." as a last resort. Every git
+# call below runs through `git -C "$(_repo_dir)"` so the cwd (which may be the
+# skill's own github checkout) can never leak into the resolved target.
+_repo_dir() {
+    [[ -n "$PRD_REPO_DIR" ]] && { echo "$PRD_REPO_DIR"; return; }
+    git rev-parse --show-toplevel 2>/dev/null || echo "."
+}
+
 # Slug identifying the current repository, used to namespace the ephemeral
 # scratch directory so different projects never collide. Basename of the git
 # toplevel; falls back to the remote project path, then to "default".
 _repo_slug() {
     local top slug
-    top=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    top=$(git -C "$(_repo_dir)" rev-parse --show-toplevel 2>/dev/null || echo "")
     if [[ -n "$top" ]]; then
         echo "$(basename "$top")"
         return
@@ -73,9 +83,36 @@ _prd_cleanup_input() {
 # handling both ssh (git@host:path) and https (https://host/path) forms.
 _remote_host() {
     local url
-    url=$(git remote get-url origin 2>/dev/null || echo "")
-    [[ -z "$url" ]] && url=$(git remote -v 2>/dev/null | grep -oE '\S+\.\S+' | head -1)
+    url=$(git -C "$(_repo_dir)" remote get-url origin 2>/dev/null || echo "")
+    [[ -z "$url" ]] && url=$(git -C "$(_repo_dir)" remote -v 2>/dev/null | grep -oE '\S+\.\S+' | head -1)
     echo "$url" | sed -E 's#^[a-zA-Z]+://##; s#^[^@]+@##; s#[:/].*$##'
+}
+
+# Safety net against operating on the wrong repository. If the target platform
+# is gitlab but the resolved remote host is github.com (or vice versa), the
+# skill is almost certainly reading some other repo's remote (e.g. its own
+# github checkout when run from the skill folder). Abort with an actionable
+# message instead of firing a request at the wrong host and failing cryptically.
+_guard_remote_matches() {
+    local platform="$1" host
+    host=$(_remote_host)
+    [[ -z "$host" ]] && return 0
+    case "$platform" in
+        gitlab)
+            if [[ "$host" == "github.com" ]]; then
+                echo "❌ Plataforma alvo é gitlab, mas o remote resolvido é github.com (host=$host)." >&2
+                echo "   Rode da raiz do projeto GitLab ou defina PRD_REPO_DIR=/caminho/do/projeto (ou PRD_GITLAB_PROJECT)." >&2
+                exit 1
+            fi
+            ;;
+        github)
+            if [[ "$host" == *gitlab* ]]; then
+                echo "❌ Plataforma alvo é github, mas o remote resolvido aponta para GitLab (host=$host)." >&2
+                echo "   Rode da raiz do projeto correto ou defina PRD_REPO_DIR=/caminho/do/projeto." >&2
+                exit 1
+            fi
+            ;;
+    esac
 }
 
 # Detect which platform we're using
@@ -91,7 +128,7 @@ _detect_platform() {
 
     # Check git remote for obvious platform patterns
     local remote
-    remote=$(git remote -v 2>/dev/null || echo "")
+    remote=$(git -C "$(_repo_dir)" remote -v 2>/dev/null || echo "")
 
     if echo "$remote" | grep -qiE '(gitlab\.|@gitlab|//gitlab)'; then
         echo "gitlab"
@@ -116,6 +153,12 @@ _detect_platform() {
             echo "github"
             return
         fi
+    fi
+
+    # GitLab-specific config present? Lean gitlab before guessing by CLI.
+    if [[ -n "$PRD_GITLAB_PROJECT" || -n "$GITLAB_HOST" ]]; then
+        echo "gitlab"
+        return
     fi
 
     # Fallback: check which CLI is available
@@ -153,7 +196,7 @@ _gitlab_project_path() {
         return
     fi
     local url
-    url=$(git remote get-url origin 2>/dev/null || echo "")
+    url=$(git -C "$(_repo_dir)" remote get-url origin 2>/dev/null || echo "")
     [[ -z "$url" ]] && return
     echo "$url" \
         | sed -E 's#^[a-zA-Z]+://##; s#^[^@]+@##; s#^[^/:]+(:[0-9]+)?[:/]+##; s#\.git/?$##; s#/+$##'
@@ -202,8 +245,15 @@ _glab_repo_flag() {
 # on self-hosted instances regardless of glab's default host. Robust against
 # description content that contains '---' or other markup.
 _gitlab_issue_json() {
-    local iid="$1"
-    glab api $(_glab_api_host_flag) "projects/$(_gitlab_project_ref)/issues/$iid" 2>/dev/null
+    local iid="$1" out
+    _guard_remote_matches gitlab
+    out=$(glab api $(_glab_api_host_flag) "projects/$(_gitlab_project_ref)/issues/$iid" 2>/dev/null)
+    if ! printf '%s' "$out" | jq empty 2>/dev/null; then
+        echo "❌ Resposta não-JSON da API GitLab (host=$(_remote_host), projeto=$(_gitlab_project_path))." >&2
+        echo "   Verifique autenticação (glab auth status), host e projeto-alvo." >&2
+        return 1
+    fi
+    printf '%s' "$out"
 }
 
 # Create issue
@@ -215,6 +265,7 @@ issue_create() {
 
     case "$platform" in
         gitlab)
+            _guard_remote_matches gitlab
             local repo_flag
             repo_flag=$(_glab_repo_flag)
             if [[ -n "$labels" ]]; then
@@ -285,7 +336,15 @@ issue_get_comments() {
             # Notes as JSON, oldest first, large page to cover long chains.
             # Both GitHub comments and GitLab notes expose a `.body`, so the
             # callers' `jq '.[].body'` works uniformly across platforms.
-            glab api $(_glab_api_host_flag) "projects/$(_gitlab_project_ref)/issues/$issue_number/notes?per_page=100&sort=asc" 2>/dev/null
+            _guard_remote_matches gitlab
+            local notes
+            notes=$(glab api $(_glab_api_host_flag) "projects/$(_gitlab_project_ref)/issues/$issue_number/notes?per_page=100&sort=asc" 2>/dev/null)
+            if ! printf '%s' "$notes" | jq empty 2>/dev/null; then
+                echo "❌ Resposta não-JSON da API GitLab ao ler notas (host=$(_remote_host), projeto=$(_gitlab_project_path))." >&2
+                echo "   Verifique autenticação (glab auth status), host e projeto-alvo." >&2
+                return 1
+            fi
+            printf '%s' "$notes"
             ;;
         github)
             local repo
@@ -307,6 +366,7 @@ issue_update_body() {
 
     case "$platform" in
         gitlab)
+            _guard_remote_matches gitlab
             glab issue update "$issue_number" $(_glab_repo_flag) -d "$body"
             ;;
         github)
@@ -327,6 +387,7 @@ issue_create_comment() {
 
     case "$platform" in
         gitlab)
+            _guard_remote_matches gitlab
             glab issue note "$issue_number" $(_glab_repo_flag) -m "$comment_body"
             ;;
         github)
@@ -346,6 +407,7 @@ issue_exists() {
 
     case "$platform" in
         gitlab)
+            _guard_remote_matches gitlab
             glab issue view "$issue_number" $(_glab_repo_flag) &>/dev/null
             ;;
         github)
