@@ -49,6 +49,7 @@ fi
 _platform=$(_detect_platform)
 _platform_name="GitHub"
 [[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
+_guard_remote_matches "$_platform"
 
 echo "📝 Buscando PRD da issue #$_issue_number ($_platform_name)..." >&2
 _prd_content=$(issue_get_body "$_issue_number")

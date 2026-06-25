@@ -44,6 +44,8 @@ if [[ ! -f "$_prd_file" ]]; then
     exit 1
 fi
 
+_guard_remote_matches "$(_detect_platform)"
+
 # Fetch live description
 _desc=$(issue_get_body "$_issue_number" || echo "")
 if [[ -z "$_desc" ]]; then
