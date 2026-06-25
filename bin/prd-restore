@@ -47,6 +47,7 @@ _target="${2#v}"
 _platform=$(_detect_platform)
 _platform_name="GitHub"
 [[ "$_platform" == "gitlab" ]] && _platform_name="GitLab"
+_guard_remote_matches "$_platform"
 
 # Fetch live description (latest state)
 echo "📥 Baixando descrição da issue #$_issue_number ($_platform_name)..." >&2
